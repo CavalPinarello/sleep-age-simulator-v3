@@ -17,13 +17,27 @@ Values are typical for healthy sleepers. Lifestyle effects are averages from sle
 * **Overlays**: sleep pressure (Process S) and melatonin from the two-process model, growth hormone and cortisol.
 * **Compare**: two nights side by side on the same clock axis. B starts as a copy of A.
 
+## The brain window
+
+Under the hypnogram a small 3D cortex shows the EEG signature of the stage at one moment of the night: travelling slow waves in N3 (and the odd K-complex in N2), spindles in N2 and N3, the alpha rhythm over the back of the head while awake with eyes closed, vertex waves in N1, and in REM the regional blood-flow pattern from PET studies. Age changes the size, number and position of the slow waves and spindles. Arousal ticks from the model show as a brief red flush while the night plays.
+
+Move the pointer over the hypnogram (or drag a finger sideways on a phone) to pick the moment, or press "Play the night". The ribbon under the caption is a keyboard slider: arrow keys move one minute, Page Up and Page Down move 30. Drag the brain to turn it; Top, Side and Inside are preset views, and Inside shows the medial surface of the right hemisphere. In compare mode each night gets its own brain at the same clock time, and turning one turns both. "Hide" collapses the window and is remembered.
+
+Everything on the brain is a drawing rule driven by the simulated night. It is a schematic on an adult template brain, shown in slow motion, and not a recording. The design, the evidence for each rule and what is deliberately left out are in `docs/stage2-brain-brief.md`.
+
+The brain needs the page to be served over http (for example `python3 -m http.server`) and a browser with WebGL. Opened from `file://` or without WebGL, the simulator works as before and the window says why the brain is missing.
+
+Links can set the starting state, which also helps for screenshots: `state=` and `stateB=` take URL-encoded JSON with the same keys as the controls (for example `?state={"age":75}`, and `stateB` turns compare on), `t=` sets the moment in minutes after 18:00, `rt=` freezes the rhythm clock in seconds, `view=top|side|inside` picks the view, `brain=0|1` hides or shows the window, and `stats=1` prints paint and render time in the corner of the brain.
+
 ## Usage
 
-Open `index.html` in a modern browser, or serve the folder with any static server (`python3 -m http.server`). No build step and no dependencies.
+Serve the folder with any static server (`python3 -m http.server`) and open it in a modern browser. Opening `index.html` directly works for everything except the 3D brain. There is no build step; three.js and the brain mesh are in `vendor/`.
 
 ## Tests
 
-`node tests/scenarios.mjs --check` runs the model against the acceptance ranges in `docs/stage1-review.md` (section F9) and exits non-zero on any failure.
+`node tests/scenarios.mjs --check && node tests/brain-map.mjs`
+
+The first runs the model against the acceptance ranges in `docs/stage1-review.md` (section F9). The second checks the brain mesh, the region fields and the drawing rules of the brain window against the tests in `docs/stage2-brain-brief.md` (section D10). Both exit non-zero on any failure.
 
 ## Sources
 
@@ -53,6 +67,40 @@ Open `index.html` in a modern browser, or serve the folder with any static serve
 
 Jet lag, social jet lag and nocturia effect sizes are illustrative; no pooled polysomnography estimate was found for them.
 
+### Brain window
+
+* Massimini M, Huber R, Ferrarelli F, Hill S, Tononi G. The sleep slow oscillation as a traveling wave. J Neurosci 2004;24:6862-6870.
+* Murphy M, Riedner BA, Huber R, Massimini M, Ferrarelli F, Tononi G. Source modeling sleep slow waves. PNAS 2009;106:1608-1613.
+* Riedner BA et al. Sleep homeostasis and cortical synchronization: III. A high-density EEG study of sleep slow waves in humans. Sleep 2007;30:1643-1657.
+* Werth E, Achermann P, Borbély AA. Fronto-occipital EEG power gradients in human sleep. J Sleep Res 1997;6:102-112.
+* Kurth S et al. Mapping of cortical activity in the first two decades of life: a high-density sleep electroencephalogram study. J Neurosci 2010;30:13211-13219.
+* Campbell IG, Feinberg I. Longitudinal trajectories of non-rapid eye movement delta and theta EEG as indicators of adolescent brain maturation. PNAS 2009;106:5177-5180.
+* Carrier J et al. Sleep slow wave changes during the middle years of life. Eur J Neurosci 2011;33:758-766.
+* Mander BA et al. Prefrontal atrophy, disrupted NREM slow waves and impaired hippocampal-dependent memory in aging. Nat Neurosci 2013;16:357-364.
+* Landolt HP, Borbély AA. Age-dependent changes in sleep EEG topography. Clin Neurophysiol 2001;112:369-377.
+* Dubé J et al. Cortical thinning explains changes in sleep slow waves during adulthood. J Neurosci 2015;35:7795-7807.
+* Purcell SM et al. Characterizing sleep spindles in 11,630 individuals from the National Sleep Research Resource. Nat Commun 2017;8:15930.
+* Martin N et al. Topography of age-related changes in sleep spindles. Neurobiol Aging 2013;34:468-476.
+* Anderer P et al. Low-resolution brain electromagnetic tomography revealed simultaneously active frontal and parietal sleep spindle sources in the human cortex. Neuroscience 2001;103:581-592.
+* De Gennaro L, Ferrara M. Sleep spindles: an overview. Sleep Med Rev 2003;7:423-440.
+* Maquet P et al. Functional neuroanatomy of human rapid-eye-movement sleep and dreaming. Nature 1996;383:163-166.
+* Braun AR et al. Regional cerebral blood flow throughout the sleep-wake cycle. Brain 1997;120:1173-1197.
+* Braun AR et al. Dissociated pattern of activity in visual cortices and their projections during human rapid eye movement sleep. Science 1998;279:91-95.
+* Berry RB et al. The AASM Manual for the Scoring of Sleep and Associated Events (alpha rhythm, vertex sharp waves, K-complexes, spindles, arousal rule).
+* Fischl B, Sereno MI, Tootell RBH, Dale AM. High-resolution intersubject averaging and a coordinate system for the cortical surface. Hum Brain Mapp 1999;8:272-284.
+
+## Third-party material
+
+The 3D brain uses the FreeSurfer fsaverage5 template surface (Fischl B, Sereno MI, Tootell RBH,
+Dale AM. High-resolution intersubject averaging and a coordinate system for the cortical surface.
+Hum Brain Mapp 1999;8:272-284). vendor/fsaverage5.bin was obtained under license from The General
+Hospital Corporation and is covered by the FreeSurfer Software License Agreement
+(vendor/FREESURFER-LICENSE.txt), not by the MIT license of this repository. It is a repacked,
+rescaled copy of the original files. FreeSurfer is designed for research purposes; this page is
+a teaching schematic and not a clinical tool.
+
+3D rendering by three.js r160, MIT license, copyright three.js authors (vendor/THREE-LICENSE.txt).
+
 ## License
 
-MIT License
+MIT License for the code in this repository. See Third-party material for the brain mesh.
