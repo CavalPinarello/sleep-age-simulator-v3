@@ -82,7 +82,7 @@ ScientificConstants.KEYFRAMES = {
     sol: [[0, 8], [3, 15], [10, 17], [18, 15], [35, 14], [50, 15.5], [65, 18], [80, 21], [100, 24]],
     // Wake after sleep onset, min (Boulos Table 2, +9.7 min per decade).
     waso: [[0, 60], [1, 25], [5, 20], [16, 20], [25, 25], [42, 40], [57, 55], [72, 70], [80, 85], [90, 100], [100, 110]],
-    n1: [[0, 0], [1, 5], [10, 5], [18, 5.5], [25, 6], [42, 8], [57, 9], [72, 10], [80, 11], [100, 13]],
+    n1: [[0, 0], [1, 3], [10, 3], [18, 3.5], [25, 4], [42, 5], [57, 6.5], [72, 8], [80, 9], [100, 11]],
     n3: [[0, 0], [1, 28], [5, 30], [10, 27], [16, 22], [25, 21], [40, 19], [60, 16], [80, 13], [100, 11]],
     rem: [[0, 45], [1, 30], [3, 25], [5, 22], [10, 21], [18, 20], [40, 19.5], [60, 18.5], [80, 17.5], [100, 16.5]],
     // Minutes after 18:00 (Carskadon, Roenneberg 2004, older-adult advance of about 1 h).
@@ -233,7 +233,8 @@ class HypnogramGenerator {
         // ---- F5.5 N1: onset, post-REM and intrusions; 2 min per wake bout is reserved for re-entry
         const boutCount = (g) => clamp(Math.round(g.min / g.per), 1, 10);
         const nBoutsEst = groups.reduce((s, g) => s + (g.min >= 3 ? boutCount(g) : 0), 0) + nocturia;
-        const onsetN1 = infant ? 0 : clamp(0.25 * N1m, Math.min(2, N1m), 8);
+        // Most of a healthy sleeper's N1 is at sleep onset (Martin, 2026-11-24).
+        const onsetN1 = infant ? 0 : clamp(0.5 * N1m, Math.min(2, N1m), 12);
         const n1Pool = Math.max(0, N1m - onsetN1 - 2 * nBoutsEst);
 
         // ---- F5.6 sleep-only segment list
@@ -250,7 +251,8 @@ class HypnogramGenerator {
         for (let i = 0; i < nC; i++) {
             if (infant) { push(STAGES.REM, remc[i]); push(STAGES.N2, L[i] - remc[i]); continue; }
             const n1i = n1Pool * (L[i] / fullT);
-            const post = Math.min(3, n1i);
+            // No fixed N1 after REM: REM ends in N2 or a brief waking (Martin, 2026-11-24).
+            const post = 0;
             const intr = n1i - post;
             const on = i === 0 ? onsetN1 : 0;
             let n2 = L[i] - n3c[i] - remc[i] - n1i - on;
@@ -826,12 +828,16 @@ document.addEventListener('DOMContentLoaded', () => {
             const grad = ctx.createLinearGradient(0, y, 0, bottom);
             grad.addColorStop(0, STAGE_COLORS[b.stage]);
             grad.addColorStop(1, 'rgba(30, 41, 59, 0)');
-            ctx.globalAlpha = 0.6;
+            // Brief N1 transitions (under 3 min) are drawn faintly so they read as
+            // passing moments, not as a stage the sleeper sits in.
+            const brief = b.stage === STAGES.N1 && b.duration < 3;
+            ctx.globalAlpha = brief ? 0.22 : 0.6;
             ctx.fillStyle = grad;
             ctx.fillRect(x, y, w, bottom - y);
-            ctx.globalAlpha = 1;
+            ctx.globalAlpha = brief ? 0.55 : 1;
             ctx.fillStyle = STAGE_COLORS[b.stage];
-            ctx.fillRect(x, y - 1, Math.max(w, 0.75), 4);
+            ctx.fillRect(x, y - 1, Math.max(w, 0.75), brief ? 2 : 4);
+            ctx.globalAlpha = 1;
         });
 
         // Arousal ticks (F6.7): short ticks from the top line, never full height.

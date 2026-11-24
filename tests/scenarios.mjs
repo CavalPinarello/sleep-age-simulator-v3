@@ -258,17 +258,18 @@ for (const sc of scenarios) {
 // [metric, min, max]. Means over the seeds must fall inside. See docs/stage1-review.md section F.
 const ADULT_SHAPE = [['remLat', 60, 120], ['meanCycle', 80, 115], ['n3FirstHalf', 65, 100], ['remFirstHalf', 15, 45], ['wakeToDeep', 0, 0], ['n3ToRem', 0, 0], ['trailingWake', 0, 0]];
 const ACCEPT = {
+  // N1 ranges set 2026-11-24 by Martin (sleep physician): healthy young adults 3 to 5% of TST.
   'newborn 0': [['tst', 480, 600], ['rem', 40, 55], ['n1', 0, 0], ['se', 75, 92], ['wakeBouts', 2, 6], ['meanCycle', 45, 65], ['remLat', 0, 20]],
-  'child 8': [['tst', 560, 630], ['n3', 22, 30], ['rem', 18, 24], ['n1', 3, 8], ['se', 90, 97], ['sol', 10, 25], ['waso', 5, 30], ['remLat', 100, 140], ['wakeToDeep', 0, 0], ['trailingWake', 0, 0]],
+  'child 8': [['tst', 560, 630], ['n3', 22, 30], ['rem', 18, 24], ['n1', 2.5, 5], ['se', 90, 97], ['sol', 10, 25], ['waso', 5, 30], ['remLat', 100, 140], ['wakeToDeep', 0, 0], ['trailingWake', 0, 0]],
   'teen 16 owl': [['tst', 450, 520], ['n3', 17, 24], ['rem', 19, 24], ['se', 88, 96]],
-  '25 M healthy': [['tst', 420, 465], ['tib', 455, 500], ['se', 88, 95], ['sol', 8, 20], ['waso', 15, 35], ['n1', 4, 9], ['n2', 45, 56], ['n3', 16, 23], ['rem', 19, 24], ['cycles', 4, 5.5], ...ADULT_SHAPE],
+  '25 M healthy': [['tst', 420, 465], ['tib', 455, 500], ['se', 88, 95], ['sol', 8, 20], ['waso', 15, 35], ['n1', 3, 5], ['n2', 45, 56], ['n3', 16, 23], ['rem', 19, 24], ['cycles', 4, 5.5], ...ADULT_SHAPE],
   '25 F healthy': [['tst', 420, 470], ['se', 88, 95], ['n3', 17, 25], ['rem', 19, 24], ...ADULT_SHAPE],
   '35 M': [['tst', 405, 450], ['se', 86, 94], ['waso', 20, 45], ['n3', 13, 20], ['rem', 19, 23], ...ADULT_SHAPE],
   '35 M SDB 10': [['tst', 360, 420], ['se', 72, 86], ['waso', 50, 100], ['n1', 15, 30], ['n3', 4, 12], ['rem', 12, 19], ['wakeBouts', 6, 16], ['wakeToDeep', 0, 0], ['trailingWake', 0, 0]],
   '52 F': [['tst', 385, 430], ['se', 82, 91], ['waso', 35, 65], ['n3', 14, 21], ['rem', 18, 23]],
   '52 F perimenopause': [['tst', 370, 420], ['se', 78, 89], ['waso', 45, 85], ['n3', 13, 21], ['rem', 17, 23], ['sol', 12, 30]],
-  '65 F': [['tst', 365, 410], ['se', 78, 88], ['waso', 50, 85], ['n3', 12, 20], ['rem', 17, 22], ['n1', 6, 12]],
-  '80 M': [['tst', 330, 385], ['se', 70, 82], ['waso', 75, 120], ['n1', 9, 16], ['n3', 4, 11], ['rem', 15, 21], ['sol', 15, 30], ['wakeBouts', 5, 12], ['wakeToDeep', 0, 0], ['trailingWake', 0, 0]],
+  '65 F': [['tst', 365, 410], ['se', 78, 88], ['waso', 50, 85], ['n3', 12, 20], ['rem', 17, 22], ['n1', 5, 10]],
+  '80 M': [['tst', 330, 385], ['se', 70, 82], ['waso', 75, 120], ['n1', 7, 13], ['n3', 4, 11], ['rem', 15, 21], ['sol', 15, 30], ['wakeBouts', 5, 12], ['wakeToDeep', 0, 0], ['trailingWake', 0, 0]],
   '80 M nocturia 3': [['tst', 310, 375], ['se', 65, 80], ['waso', 95, 150], ['wakeBouts', 6, 16], ['wakeToDeep', 0, 0], ['trailingWake', 0, 0]],
   '25 M 3 drinks': [['tst', 400, 465], ['sol', 8, 14], ['waso', 25, 60], ['rem', 13, 18], ['remLat', 95, 140], ['n3', 16, 25], ['n3FirstHalf', 75, 100], ['firstRem', 1, 7]],
   '25 M 2 coffees 0h normal': [['tst', 375, 430], ['sol', 15, 35], ['n3', 12, 20], ['se', 80, 91]],
