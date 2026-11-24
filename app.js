@@ -1,431 +1,451 @@
 /**
- * Sleep Age Simulator - Single File Bundle
- * Merged models.js and app.js to prevent file:// origin issues.
+ * Sleep Age Simulator v3
+ *
+ * The model section (everything above the APP LOGIC marker) has no DOM access.
+ * tests/scenarios.mjs loads exactly that slice and checks it against the
+ * Stage 1 acceptance ranges (docs/stage1-review.md, sections F and F9).
+ *
+ * Time axis: minutes after 18:00 on the evening the night starts.
  */
 
 // --- MODELS ---
 
-const STAGES = {
-    WAKE: 0,
-    REM: 1,
-    N1: 2,
-    N2: 3,
-    N3: 4
-};
+const STAGES = { WAKE: 0, REM: 1, N1: 2, N2: 3, N3: 4 };
+
+// Seeded PRNG so the same settings always draw the same night.
+function mulberry32(a) {
+    return function () {
+        a |= 0; a = (a + 0x6D2B79F5) | 0;
+        let t = Math.imul(a ^ (a >>> 15), 1 | a);
+        t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+        return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+}
+
+const clamp = (x, lo, hi) => Math.max(lo, Math.min(hi, x));
 
 class ScientificConstants {
-    static getAgeProfile(age) {
-        // Helper: Linear Interpolation between Keyframes
-        const interpolate = (val, keyframes) => {
-            if (val <= keyframes[0][0]) return keyframes[0][1];
-            if (val >= keyframes[keyframes.length - 1][0]) return keyframes[keyframes.length - 1][1];
-
-            for (let i = 0; i < keyframes.length - 1; i++) {
-                const [a1, v1] = keyframes[i];
-                const [a2, v2] = keyframes[i + 1];
-                if (val >= a1 && val <= a2) {
-                    const t = (val - a1) / (a2 - a1);
-                    return v1 + t * (v2 - v1);
-                }
-            }
-            return keyframes[keyframes.length - 1][1];
-        };
-
-        // 1. Total Sleep Time (Minutes) - Aggressive Tuning
-        // Age 0: 16h (960m)
-        // Age 5: 11.5h (690m)
-        // Age 12: 9.5h (570m)
-        // Age 18: 8.0h (480m)
-        // Age 40: 7.2h (432m)
-        // Age 60: 6.0h (360m)
-        // Age 80: 5.2h (312m) !! Aggressive Drop
-        // Age 90: 5.0h (300m)
-        const tstKeyframes = [
-            [0, 960],
-            [5, 690],
-            [12, 570],
-            [18, 480],
-            [40, 432],
-            [60, 360],
-            [80, 312],
-            [90, 300]
-        ];
-        const tst = interpolate(age, tstKeyframes);
-
-        // 2. Deep Sleep (N3) %
-        // High in childhood, drops in teens, stabilizes, drops in old age but NOT to zero.
-        const n3Keyframes = [
-            [0, 0.25],
-            [10, 0.25],
-            [18, 0.22], // Puberty drop
-            [40, 0.18],
-            [60, 0.15],
-            [80, 0.12], // Kept reasonable
-            [100, 0.10]
-        ];
-        let n3P = interpolate(age, n3Keyframes);
-
-        // 3. REM %
-        // Newborns have huge REM (50%). Drops to 25% by age 3-5. Stable 20-25% adult.
-        const remKeyframes = [
-            [0, 0.50],
-            [3, 0.30],
-            [5, 0.25],
-            [60, 0.23],
-            [80, 0.20],
-            [100, 0.18]
-        ];
-        let remP = interpolate(age, remKeyframes);
-
-        // 4. WASO (Wake After Sleep Onset) - Minutes
-        // 20yo: 10m. 80yo: 120m (Aggressive fragmentation).
-        const wasoKeyframes = [
-            [0, 5],
-            [30, 20],
-            [50, 45],
-            [70, 80],
-            [80, 120],
-            [90, 150]
-        ];
-        let wasoMins = interpolate(age, wasoKeyframes);
-
-        // 5. N1 (Light Sleep)
-        // Increases with age as Deep decreases.
-        const n1Keyframes = [
-            [0, 0.05],
-            [50, 0.05],
-            [80, 0.10],
-            [100, 0.12]
-        ];
-        let n1P = interpolate(age, n1Keyframes);
-
-        // N2: The filler
-        let n2P = 1.0 - (n3P + remP + n1P);
-
-        // Safety normalization
-        if (n2P < 0) {
-            const sum = n3P + remP + n1P;
-            n3P = n3P / sum * 0.95;
-            remP = remP / sum * 0.95;
-            n1P = n1P / sum * 0.95;
-            n2P = 0.05;
+    // Linear interpolation between [age, value] keyframes, clamped at both ends.
+    static interp(val, kf) {
+        if (val <= kf[0][0]) return kf[0][1];
+        if (val >= kf[kf.length - 1][0]) return kf[kf.length - 1][1];
+        for (let i = 0; i < kf.length - 1; i++) {
+            const [a1, v1] = kf[i];
+            const [a2, v2] = kf[i + 1];
+            if (val >= a1 && val <= a2) return v1 + ((val - a1) / (a2 - a1)) * (v2 - v1);
         }
+        return kf[kf.length - 1][1];
+    }
 
-        return { tst, n3P, remP, n1P, n2P, wasoMins };
+    // Age profile (F2). Percentages are percent of TST; N2 is whatever is left.
+    static getAgeProfile(age, gender = 'male') {
+        const K = ScientificConstants.KEYFRAMES;
+        const p = {};
+        for (const key of Object.keys(K)) p[key] = ScientificConstants.interp(age, K[key]);
+        // Sex: women keep more slow-wave sleep with age (Redline 2004, MrOS vs SOF).
+        const k = clamp((age - 30) / 40, 0, 1);
+        if (gender === 'male') { p.n3 *= 1 - 0.30 * k; p.n1 += 1.0 * k; }
+        else { p.n3 *= 1 + 0.15 * k; p.n1 -= 0.5 * k; }
+        return p;
+    }
+
+    // Chronotype offset in minutes, faded in between ages 2 and 10 (F3).
+    static chronoOffset(age, chronotype) {
+        const off = { lark: -75, owl: 90 }[chronotype] || 0;
+        return off * clamp((age - 2) / 8, 0, 1);
+    }
+
+    // Bedtime for the age and chronotype, before any lifestyle shift.
+    static habitualBedtime(age, chronotype) {
+        return ScientificConstants.interp(age, ScientificConstants.KEYFRAMES.bedtime) +
+            ScientificConstants.chronoOffset(age, chronotype);
+    }
+
+    // Middle of the NSF 2015 recommended range, in minutes. null for newborns.
+    static recommendedWindow(age) {
+        if (age < 1) return null;
+        if (age < 3) return 11 * 60;
+        if (age < 6) return 11.5 * 60;
+        if (age < 14) return 10 * 60;
+        if (age < 18) return 9 * 60;
+        if (age < 65) return 8 * 60;
+        return 7.5 * 60;
     }
 }
+
+ScientificConstants.KEYFRAMES = {
+    // Night sleep, min. NSF 2015 for children, Boulos 2019 between first and later nights, MrOS/SOF at 82.
+    tst: [[0, 510], [1, 630], [3, 630], [5, 620], [8, 585], [10, 570], [12, 550], [14, 510], [16, 480], [18, 455], [25, 440], [40, 420], [60, 395], [70, 380], [80, 360], [90, 345], [100, 335]],
+    // Daytime sleep, min (NSF 24 h totals).
+    nap: [[0, 390], [1, 150], [2, 105], [3, 60], [4, 30], [5, 0], [100, 0]],
+    // Sleep onset latency, min (Boulos Table 3, paediatric meta-analysis).
+    sol: [[0, 8], [3, 15], [10, 17], [18, 15], [35, 14], [50, 15.5], [65, 18], [80, 21], [100, 24]],
+    // Wake after sleep onset, min (Boulos Table 2, +9.7 min per decade).
+    waso: [[0, 60], [1, 25], [5, 20], [16, 20], [25, 25], [42, 40], [57, 55], [72, 70], [80, 85], [90, 100], [100, 110]],
+    n1: [[0, 0], [1, 5], [10, 5], [18, 5.5], [25, 6], [42, 8], [57, 9], [72, 10], [80, 11], [100, 13]],
+    n3: [[0, 0], [1, 28], [5, 30], [10, 27], [16, 22], [25, 21], [40, 19], [60, 16], [80, 13], [100, 11]],
+    rem: [[0, 45], [1, 30], [3, 25], [5, 22], [10, 21], [18, 20], [40, 19.5], [60, 18.5], [80, 17.5], [100, 16.5]],
+    // Minutes after 18:00 (Carskadon, Roenneberg 2004, older-adult advance of about 1 h).
+    bedtime: [[0, 120], [3, 105], [6, 120], [8, 150], [10, 180], [12, 210], [14, 255], [16, 315], [19, 375], [22, 345], [25, 315], [30, 300], [60, 285], [70, 265], [80, 240], [100, 225]],
+    cycleLen: [[0, 55], [2, 70], [6, 85], [12, 90], [18, 95], [100, 95]],
+    firstCycleLen: [[0, 55], [1, 70], [3, 100], [6, 125], [10, 130], [16, 105], [18, 95], [100, 95]],
+};
+
+ScientificConstants.DEFAULT_SEED = 20261124;
+ScientificConstants.CAFFEINE_HALF_LIFE = { fast: 3.5, normal: 5, slow: 8 };
 
 class HypnogramGenerator {
     generate(config) {
-        const {
-            age, gender, alcohol = 0, caffeine = 0, caffeineTime = 0,
-            caffeineMetabolism = 'normal', sdbSeverity = 0, nocturia = 0,
-            chronotype = 'normal', socialJetLag = false, blueLight = false,
-            isMenopausal = false
-        } = config;
+        // ---- F1.3 inputs, clamped
+        const age = clamp(+config.age || 0, 0, 100);
+        const gender = config.gender === 'female' ? 'female' : 'male';
+        const alcohol = clamp(+config.alcohol || 0, 0, 6);
+        const caffeine = clamp(+config.caffeine || 0, 0, 6);
+        const caffeineTime = clamp(+config.caffeineTime || 0, 0, 12);
+        const nocturia = clamp(Math.round(+config.nocturia || 0), 0, 5);
+        const sdb = clamp(+config.sdbSeverity || 0, 0, 10) / 10;
+        const chronotype = config.chronotype || 'normal';
+        const jetLag = config.jetLag || 'none';
+        const meno = !!config.isMenopausal && gender === 'female' && age >= 40 && age <= 60;
+        const infant = age < 1;
+        const rng = mulberry32(config.seed === undefined ? ScientificConstants.DEFAULT_SEED : config.seed);
 
-        // 1. Get Base Profile
-        const profile = ScientificConstants.getAgeProfile(age);
-        let { tst, n3P, remP, n1P, n2P, wasoMins } = profile;
+        // ---- F4 modifiers
+        const p = ScientificConstants.getAgeProfile(age, gender);
+        let { tst, sol, n1, n3, rem } = p;
+        const groups = [{ min: p.waso, zone: 'any', per: 9 }];
+        let truncate = 0, remCut = 0, firstCycleAdd = 0;
+        let r3 = age < 12 ? 0.7 : 0.55;
+        let q0 = 1, q1 = 1, bedShift = 0, clockShift = 0;
 
-        // --- ADVANCED MODIFIERS ---
-
-        // 0. Blue Light (Screens)
-        let blueLightLatency = 0;
-        if (blueLight) {
-            blueLightLatency = 45;
-            tst -= 30;
-            n3P *= 0.85;
-            remP *= 0.9;
-            n1P += 0.03;
+        // Caffeine: load still in the body at bedtime, saturating effect (Gardiner 2023, Drake 2013).
+        const halfLife = ScientificConstants.CAFFEINE_HALF_LIFE[config.caffeineMetabolism] || 5;
+        const load = caffeine * Math.pow(0.5, caffeineTime / halfLife);
+        const f = 1 - Math.exp(-Math.max(0, load - 0.3) / 1.2);
+        if (f > 0) {
+            tst -= 70 * f; sol += 20 * f; n3 -= 3 * f; n1 += 3 * f;
+            groups.push({ min: 25 * f, zone: 'any', per: 8 });
         }
-
-        // 1. Caffeine Model
-        let halfLife = 6;
-        if (caffeineMetabolism === 'fast') halfLife = 4;
-        if (caffeineMetabolism === 'slow') halfLife = 8;
-        const activeCaffeine = caffeine * Math.pow(0.5, caffeineTime / halfLife);
-
-        if (activeCaffeine > 0.1) {
-            n3P *= Math.max(0.5, 1 - (activeCaffeine * 0.15));
-            n1P += activeCaffeine * 0.03;
-            // Caffeine Penalties (Corrected)
-            tst -= activeCaffeine * 15; // Reduce total sleep by 15m per cup equivalent
-            wasoMins += activeCaffeine * 15; // Increase fragmentation
-        }
-
-        // 2. Alcohol Model
+        // Alcohol: REM taken from the first cycles, N3 shifted earlier, wake in the second half (Gardiner 2025, Ebrahim 2013).
         if (alcohol > 0) {
-            n3P *= Math.max(0.6, 1 - (alcohol * 0.1));
-            remP *= Math.max(0.4, 1 - (alcohol * 0.15));
-            wasoMins += alcohol * 25;
+            sol -= 1.0 * alcohol; tst -= 3 * alcohol;
+            groups.push({ min: Math.min(40, 5 * alcohol), zone: 'late', per: 7 });
+            remCut = 6.5 * alcohol;
+            firstCycleAdd = 4.8 * alcohol;
+            r3 = Math.max(0.35, r3 - 0.04 * alcohol);
+            q0 = Math.max(0.2, 1 - 0.2 * alcohol);
+            q1 = Math.max(0.5, 1 - 0.1 * alcohol);
+        }
+        // Bright screen in the last hour: small latency and timing effect only (Chang 2015, Cajochen 2022).
+        if (config.blueLight) { sol += 8; tst -= 5; clockShift += 20; }
+        // Work night after a late weekend: later to bed, alarm cuts the tail.
+        if (config.socialJetLag) { bedShift += 60; sol += 15; truncate += 75; clockShift += 120; }
+        // Jet lag, first night after landing. Illustrative sizes (Sack 2007 for direction).
+        const JL = {
+            east_mild: { sol: 15, truncate: 30, wake: 5, zone: 'any', shift: 180 },
+            east_severe: { sol: 45, truncate: 90, wake: 20, zone: 'any', shift: 480 },
+            west_mild: { sol: -3, truncate: 30, wake: 10, zone: 'last3', shift: -180 },
+            west_severe: { sol: -6, truncate: 75, wake: 30, zone: 'last3', shift: -480 },
+        }[jetLag];
+        if (JL) {
+            sol += JL.sol; truncate += JL.truncate; clockShift += JL.shift;
+            groups.push({ min: JL.wake, zone: JL.zone, per: 8 });
+        }
+        // Perimenopause with night sweats: short hot-flash awakenings (de Zambotti 2014, SWAN).
+        if (meno) { sol += 5; n1 += 1.5; groups.push({ min: 20, zone: 'any', per: 5 }); }
+        // Sleep apnea: mostly more N1 and short arousals.
+        if (sdb > 0) {
+            n1 += 16 * sdb; n3 *= 1 - 0.5 * sdb; rem *= 1 - 0.2 * sdb;
+            tst -= 15 * sdb; sol -= 3 * sdb;
+            groups.push({ min: 35 * sdb, zone: 'any', per: 5 });
         }
 
-        // 3. Social Jet Lag
-        let bedtimeShift = 0;
-        if (socialJetLag) {
-            bedtimeShift = 180;
-            tst -= 60;
-            n3P *= 0.85;
-            remP *= 0.8;
-            wasoMins += 30;
+        sol = Math.max(infant ? 3 : 5, sol);
+        n1 = Math.max(0, n1);
+        n3 = Math.max(infant ? 0 : 1, n3);
+        const finalT = Math.max(150, tst - truncate);
+        const fullT = finalT + truncate;
+
+        // ---- F5.1 stage minutes for the untruncated night
+        const N3m = (n3 / 100) * fullT;
+        const REMm = Math.max(0.5 * (rem / 100) * fullT, (rem / 100) * fullT - remCut);
+        const N1m = (n1 / 100) * fullT;
+
+        // ---- F5.2 cycle lengths
+        const Lc = p.cycleLen;
+        const L = [];
+        const L0 = Math.min(fullT, p.firstCycleLen + firstCycleAdd);
+        const remaining = fullT - L0;
+        const nFull = Math.floor(remaining / Lc);
+        const nRound = Math.round(remaining / Lc);
+        let partial = false;
+        if (remaining < 0.35 * Lc) {
+            L.push(fullT);
+        } else {
+            L.push(L0);
+            if (nRound >= 1 && Math.abs(remaining / nRound - Lc) <= 0.12 * Lc) {
+                for (let i = 0; i < nRound; i++) L.push(remaining / nRound);
+            } else {
+                for (let i = 0; i < nFull; i++) L.push(Lc);
+                L.push(remaining - nFull * Lc);
+                partial = true;
+            }
+        }
+        const nC = L.length;
+
+        // Share a total over cycles by weight, with per-cycle caps; excess goes to cycles still under cap.
+        const distribute = (total, weights, caps) => {
+            const out = new Array(nC).fill(0);
+            let left = total;
+            for (let pass = 0; pass < 4 && left > 1e-6; pass++) {
+                const open = weights.map((w, i) => (out[i] < caps[i] - 1e-9 ? w : 0));
+                const sw = open.reduce((a, b) => a + b, 0);
+                if (sw <= 0) break;
+                let used = 0;
+                for (let i = 0; i < nC; i++) {
+                    const add = Math.min(caps[i] - out[i], (left * open[i]) / sw);
+                    out[i] += add; used += add;
+                }
+                left -= used;
+            }
+            return out;
+        };
+
+        // ---- F5.3 and F5.4 N3 and REM per cycle
+        let n3c, remc;
+        if (infant) {
+            n3c = new Array(nC).fill(0);
+            remc = L.map((l) => l * (REMm / fullT));
+        } else {
+            const isPartialLast = (i) => partial && i === nC - 1;
+            const w3 = L.map((_, i) => (isPartialLast(i) ? 0 : Math.pow(r3, i)));
+            n3c = distribute(N3m, w3, L.map((l) => 0.55 * l));
+            const wr = L.map((l, i) => (1 + 0.6 * Math.min(i, 4)) * (l / Lc) * (i === 0 ? q0 : i === 1 ? q1 : 1));
+            remc = distribute(REMm, wr, L.map((l, i) => (isPartialLast(i) ? 0.6 : 0.45) * l));
         }
 
-        // Gender Diff
-        if (gender === 'male' && age > 30) {
-            // Slight fragmentation penalty
-            wasoMins *= 1.1;
+        // ---- F5.5 N1: onset, post-REM and intrusions; 2 min per wake bout is reserved for re-entry
+        const boutCount = (g) => clamp(Math.round(g.min / g.per), 1, 10);
+        const nBoutsEst = groups.reduce((s, g) => s + (g.min >= 3 ? boutCount(g) : 0), 0) + nocturia;
+        const onsetN1 = infant ? 0 : clamp(0.25 * N1m, Math.min(2, N1m), 8);
+        const n1Pool = Math.max(0, N1m - onsetN1 - 2 * nBoutsEst);
+
+        // ---- F5.6 sleep-only segment list
+        const seg = [];
+        const push = (stage, d) => { if (d > 0.01) seg.push({ stage, d }); };
+        const n2WithIntrusions = (n2, intr) => {
+            const k = intr > 0.2 ? Math.max(1, Math.ceil(intr / 4)) : 0;
+            if (k === 0 || n2 < 2 * (k + 1)) { push(STAGES.N2, n2); push(STAGES.N1, intr); return; }
+            for (let j = 0; j <= k; j++) {
+                push(STAGES.N2, n2 / (k + 1));
+                if (j < k) push(STAGES.N1, intr / k);
+            }
+        };
+        for (let i = 0; i < nC; i++) {
+            if (infant) { push(STAGES.REM, remc[i]); push(STAGES.N2, L[i] - remc[i]); continue; }
+            const n1i = n1Pool * (L[i] / fullT);
+            const post = Math.min(3, n1i);
+            const intr = n1i - post;
+            const on = i === 0 ? onsetN1 : 0;
+            let n2 = L[i] - n3c[i] - remc[i] - n1i - on;
+            if (n2 < 6) {
+                const need = 6 - n2, tot = n3c[i] + remc[i];
+                if (tot > need) {
+                    n3c[i] -= (need * n3c[i]) / tot;
+                    remc[i] -= (need * remc[i]) / tot;
+                    n2 = 6;
+                } else n2 = Math.max(0, n2);
+            }
+            push(STAGES.N1, on);
+            if (n3c[i] > 1) {
+                push(STAGES.N2, n2 * 0.35);
+                push(STAGES.N3, n3c[i]);
+                n2WithIntrusions(n2 * 0.65, intr);
+            } else {
+                n2WithIntrusions(n2 + n3c[i], intr);
+            }
+            push(STAGES.REM, remc[i]);
+            push(STAGES.N1, post);
         }
 
-        // Menopause
-        if (config.isMenopausal) {
-            wasoMins += 45;
-            n3P *= 0.80;
-            remP *= 0.9;
-            n1P += 0.05;
+        // ---- F5.7 truncate the tail (alarm or early final awakening)
+        let acc = 0;
+        const cutSeg = [];
+        for (const s of seg) {
+            if (acc >= finalT - 1e-9) break;
+            const d = Math.min(s.d, finalT - acc);
+            cutSeg.push({ stage: s.stage, d });
+            acc += d;
         }
+        const T = acc;
 
-        // Elderly Phase Shift (Restored)
-        let agePhaseShift = 0;
-        if (age > 65) {
-            // Linear shift from 65 (0) to 85 (-120)
-            const elderlyFactor = Math.min(1, (age - 65) / 20);
-            agePhaseShift = -120 * elderlyFactor;
+        // ---- F5.8 wake bouts on the sleep-time axis 0..T
+        let bouts = [];
+        for (const g of groups) {
+            if (g.min < 3) continue;
+            const B = boutCount(g);
+            const w = Array.from({ length: B }, () => 0.5 + rng());
+            const sw = w.reduce((a, b) => a + b, 0);
+            for (let j = 0; j < B; j++) {
+                const u = rng();
+                const pos = g.zone === 'late' ? T * (0.5 + 0.5 * u)
+                    : g.zone === 'last3' ? T * (0.67 + 0.33 * u)
+                        : T * Math.pow(u, 0.75);
+                bouts.push({ pos, d: (g.min * w[j]) / sw });
+            }
         }
-
-        // SDB (Sleep Apnea) - CALIBRATED
-        // Goal: SDB 10 @ 35yo ≈ Healthy @ 80yo
-        if (sdbSeverity > 0) {
-            const factor = sdbSeverity / 10; // 0 to 1
-
-            // N3: 35yo has ~15-20%. 80yo has ~5%.
-            // We need to reduce it by ~75% at max severity.
-            n3P *= (1 - factor * 0.75);
-
-            // REM: Fragmented.
-            remP *= (1 - factor * 0.3);
-
-            // WASO: 35yo has ~20m. 80yo has ~90m. Diff = 70m.
-            // Add up to 80m linear.
-            wasoMins += factor * 80;
-
-            // N1 (Micro-arousals): Massive increase.
-            n1P += factor * 0.15;
-
-            // TST penalty (Apnea shortens sleep)
-            tst -= factor * 60;
+        for (let k = 0; k < nocturia; k++) {
+            bouts.push({ pos: 90 + Math.max(60, T - 120) * (k + 0.5 + 0.4 * (rng() - 0.5)) / nocturia, d: 10 });
         }
-
-        // Nocturia
-        if (nocturia > 0) {
-            wasoMins += nocturia * 10;
+        if (infant) {
+            // F5.10 three feeds at one, two and three quarters of the night
+            bouts = [0, 1, 2].map((k) => ({ pos: (T * (k + 1)) / 4 + (rng() - 0.5) * 20, d: p.waso / 3 }));
         }
-
-        // Recalculate N2
-        // TST is now PURE SLEEP target.
-        const totalP = n3P + remP + n1P;
-        if (totalP > 0.95) {
-            const scale = 0.95 / totalP;
-            n3P *= scale; remP *= scale; n1P *= scale;
+        bouts.forEach((b) => { b.pos = clamp(b.pos, 15, T - 10); });
+        bouts.sort((a, b) => a.pos - b.pos);
+        // No awakening straight out of N3: move it to the end of that N3 block.
+        const bounds = [];
+        { let t = 0; for (const s of cutSeg) { bounds.push([t, t + s.d, s.stage]); t += s.d; } }
+        for (const b of bouts) {
+            const hit = bounds.find((x) => b.pos >= x[0] && b.pos < x[1]);
+            if (hit && hit[2] === STAGES.N3) b.pos = Math.min(T - 10, hit[1] + 0.001);
         }
-        n2P = 1.0 - (n3P + remP + n1P);
+        bouts.sort((a, b) => a.pos - b.pos);
+        for (let i = 1; i < bouts.length; i++) {
+            if (bouts[i].pos - bouts[i - 1].pos < 8) bouts[i].pos = bouts[i - 1].pos + 8;
+        }
+        bouts = bouts.filter((b) => b.pos <= T - 5);
 
-        // 3. Generate Cycles (Continuous Engine)
-        // FIX: Replaced integer cycle count with continuous loop to prevent jumps.
-
-        const cycleLength = 90;
+        // ---- F3 bedtime and F5.9 assembly
+        const habitualBedtime = ScientificConstants.habitualBedtime(age, chronotype);
+        const bedtime = habitualBedtime + bedShift;
         const blocks = [];
-        let currentTime = 0;
-
-        // Latency
-        // Continuous age-based latency: 10m baseline + age increases (Ohayon 2004)
-        let latency = 10 + Math.max(0, (age - 20) * 0.25) + (activeCaffeine * 20) + blueLightLatency;
-        if (alcohol > 0) latency = Math.max(5, latency - (alcohol * 5));
-        if (config.isMenopausal) latency += 15; // Difficulty falling asleep
-
-        blocks.push({ stage: STAGES.WAKE, duration: latency, start: 0 });
-        currentTime += latency;
-
-        // Initial N1
-        const initialN1 = 5 + (age > 50 ? 5 : 0) + (activeCaffeine * 5);
-        blocks.push({ stage: STAGES.N1, duration: initialN1, start: currentTime });
-        currentTime += initialN1;
-
-        // Calculate Wake Injection Points
-        const numWakeChunks = Math.max(1, Math.floor(wasoMins / 15));
-        const wakeChunkDuration = wasoMins / numWakeChunks;
-        const wakeInsertionIndices = [];
-        // Estimate max cycles for distribution
-        const estCycles = Math.ceil(tst / cycleLength);
-        for (let k = 0; k < numWakeChunks; k++) {
-            wakeInsertionIndices.push(Math.floor(Math.random() * estCycles));
-        }
-        wakeInsertionIndices.sort((a, b) => a - b);
-        let wakeChunkIndex = 0;
-
-        // CONTINUOUS LOOP
-        // We run until we have generated enough *Sleep* (non-wake) time to match TST.
-        // We track 'accumulatedSleep' separately from 'currentTime' (which includes Waso).
-
-        // Initialize accumulatedSleep with the Initial N1 we already added
-        let accumulatedSleep = initialN1;
-        let cycleIndex = 0;
-
-        while (accumulatedSleep < tst) {
-            const cycleProgress = Math.min(1, cycleIndex / 5); // Cap aging effect at 5 cycles
-
-            // Local Cycle Percentages
-            // First cycles have more N3. Later have more REM.
-            let localN3 = n3P * (1 - (cycleIndex * 0.15)) * 2.0;
-            // Dampen N3 decay slightly so it doesn't vanish too fast
-
-            let localREM = remP * (0.5 + (cycleIndex * 0.20) * 1.5);
-            // Increase REM in later cycles
-
-            // Alcohol Logic
-            if (alcohol > 0) {
-                if (cycleIndex < 2) {
-                    localN3 *= (1 + alcohol * 0.1);
-                    localREM *= Math.max(0.1, 1 - (alcohol * 0.3));
-                } else {
-                    localREM *= (1 + alcohol * 0.2);
-                    localN3 *= 0.5;
+        let t = bedtime;
+        const add = (stage, d) => {
+            if (d <= 0) return;
+            const last = blocks[blocks.length - 1];
+            if (last && (last.stage === stage || d <= 0.01)) last.duration += d; // merge, and absorb slivers
+            else blocks.push({ stage, start: t, duration: d });
+            t += d;
+        };
+        add(STAGES.WAKE, sol);
+        let sleepT = 0, bi = 0, reentry = 0, bridge = 0;
+        for (const s of cutSeg) {
+            let left = s.d;
+            while (left > 1e-9) {
+                if (reentry > 0) { // back to sleep through N1
+                    const r = Math.min(reentry, left);
+                    add(STAGES.N1, r); left -= r; sleepT += r; reentry -= r;
+                    if (s.stage === STAGES.N3) bridge = 3;
+                    continue;
+                }
+                if (bridge > 0 && s.stage === STAGES.N3) { // and through N2 before N3
+                    const r = Math.min(bridge, left);
+                    add(STAGES.N2, r); left -= r; sleepT += r; bridge -= r;
+                    continue;
+                }
+                const nextB = bi < bouts.length ? bouts[bi].pos : Infinity;
+                const run = Math.min(left, Math.max(0, nextB - sleepT));
+                add(s.stage, run); left -= run; sleepT += run;
+                if (bi < bouts.length && sleepT >= bouts[bi].pos - 1e-9) {
+                    add(STAGES.WAKE, bouts[bi].d);
+                    bi++;
+                    reentry = infant ? 0 : 2;
                 }
             }
-
-            // Normalize
-            let localN2 = 1.0 - (localN3 + localREM);
-            if (localN2 < 0) {
-                const total = localN3 + localREM;
-                localN3 = (localN3 / total) * 0.9;
-                localREM = (localREM / total) * 0.9;
-                localN2 = 0.1;
-            }
-
-            // Determine Cycle Duration
-            // The last cycle might be partial if we only need a few minutes to hit TST.
-            let remainingSleep = tst - accumulatedSleep;
-            let currentCycleSleep = Math.min(cycleLength, remainingSleep);
-
-            // If it's a tiny sliver (< 10 mins), maybe just skip it or merge? 
-            // Better to show it for exactness.
-
-            // Distribute currentCycleSleep into stages
-            // N2 Bridge (Pre) - 40% of N2
-            const dN2Pre = currentCycleSleep * (localN2 * 0.4);
-            blocks.push({ stage: STAGES.N2, duration: dN2Pre, start: currentTime });
-            currentTime += dN2Pre;
-            accumulatedSleep += dN2Pre;
-
-            // N3
-            if (localN3 > 0.01) {
-                const dN3 = currentCycleSleep * localN3;
-                blocks.push({ stage: STAGES.N3, duration: dN3, start: currentTime });
-                currentTime += dN3;
-                accumulatedSleep += dN3;
-            }
-
-            // N2 Bridge (Post) - 60% of N2
-            const dN2Post = currentCycleSleep * (localN2 * 0.6);
-            blocks.push({ stage: STAGES.N2, duration: dN2Post, start: currentTime });
-            currentTime += dN2Post;
-            accumulatedSleep += dN2Post;
-
-            // REM
-            const dREM = currentCycleSleep * localREM;
-            blocks.push({ stage: STAGES.REM, duration: dREM, start: currentTime });
-            currentTime += dREM;
-            accumulatedSleep += dREM;
-
-            // Post-REM N1 (Transition) - only if full cycle
-            if (currentCycleSleep >= cycleLength * 0.9) {
-                const transN1 = 2 + (age > 50 ? 2 : 0);
-                // Note: This adds to TST? Yes, N1 is sleep.
-                blocks.push({ stage: STAGES.N1, duration: transN1, start: currentTime });
-                currentTime += transN1;
-                accumulatedSleep += transN1;
-            }
-
-            // --- INJECT REAL WAKE BLOCKS (WASO) ---
-            // These do NOT count towards accumulatedSleep
-            while (wakeChunkIndex < wakeInsertionIndices.length && wakeInsertionIndices[wakeChunkIndex] === cycleIndex) {
-                blocks.push({ stage: STAGES.WAKE, duration: wakeChunkDuration, start: currentTime });
-                currentTime += wakeChunkDuration;
-                wakeChunkIndex++;
-            }
-
-            cycleIndex++;
         }
 
-        // 4. Fragmentation Overlay (Thin Lines)
-        // These are MICRO-arousals (don't add time, just paint over)
-        // We reduced WASO by converting it to blocks, but we can keep some micro-arousals for visual texture.
+        // ---- F1.4 stats measured from the finished blocks
+        const stats = HypnogramGenerator.measure(blocks);
+        stats.napMins = p.nap;
+        stats.sleepPer24h = stats.tst + p.nap;
+
+        // ---- F5.11 arousal ticks (no duration, never counted)
+        const nTicks = Math.round((stats.tst / 60) * (1 + age / 40)) + Math.round(60 * sdb);
+        const sleepBlocks = blocks.filter((b) => b.stage !== STAGES.WAKE && b.duration > 2);
         const wakeEvents = [];
-        // SEVERE APNEA TEXTURE: Increase micro-arousals significantly
-        const numMicroArousals = 5 + (age > 50 ? 5 : 0) + (sdbSeverity * 15);
-
-        for (let i = 0; i < numMicroArousals; i++) {
-            const wakeT = latency + Math.random() * (currentTime - latency); // Distribute across total time
-            wakeEvents.push({ time: wakeT, duration: 1 }); // 1 min micro-arousal
+        for (let i = 0; i < nTicks && sleepBlocks.length; i++) {
+            const b = sleepBlocks[Math.floor(rng() * sleepBlocks.length)];
+            wakeEvents.push({ time: b.start + rng() * b.duration, duration: 0 });
         }
 
-        // 5. Post-Processing
-        let startTimeOffset = 0;
-        if (chronotype === 'lark') startTimeOffset = -120;
-        if (chronotype === 'owl') startTimeOffset = 180;
-        if (socialJetLag) startTimeOffset += bedtimeShift;
-        startTimeOffset += agePhaseShift; // Apply elderly shift
-
-        // Teenage Phase Delay (Biological)
-        // Teens naturally want to go to bed later.
-        let teenShift = 0;
-        if (age >= 13 && age <= 21) {
-            // Peak at 17-19
-            if (age <= 17) {
-                // 13 -> 17: Ramp up 0 -> 90
-                teenShift = ((age - 13) / 4) * 90;
-            } else {
-                // 17 -> 21: Ramp down 90 -> 0
-                teenShift = 90 - ((age - 17) / 4) * 90;
-            }
-        }
-        startTimeOffset += teenShift;
-
-        // Metrics Calculation
-        // TST = Pure Sleep Time (calculated from blocks excluding Wake)
-        // TIB = Total Time in Bed (currentTime)
-        // SE = TST / TIB
-
-        // Recalculate actual TST from blocks
-        const actualTST = blocks.reduce((sum, b) => (b.stage !== STAGES.WAKE ? sum + b.duration : sum), 0);
-        const tib = currentTime;
-        const sleepEfficiency = (actualTST / tib) * 100;
-
+        const last = blocks[blocks.length - 1];
         return {
-            blocks: blocks.map(b => ({ ...b, start: b.start + 240 + startTimeOffset })),
-            wakeEvents: wakeEvents.map(w => ({ ...w, time: w.time + 240 + startTimeOffset })),
-            params: { chronotype, startTimeOffset, tst: actualTST, tib }, // Pass TIB for marker
-            stats: { n3P, remP, n1P, n2P, wasoMins, tst: actualTST, tib, sleepEfficiency, latency }
+            blocks,
+            wakeEvents,
+            params: {
+                age, chronotype, infant, bedtime, habitualBedtime, clockShift,
+                startTimeOffset: bedtime - 240,
+                sleepOnset: bedtime + stats.latency,
+                sleepEnd: last.start + last.duration,
+                windowLength: ScientificConstants.recommendedWindow(age),
+                tst: stats.tst, tib: stats.tib,
+            },
+            stats,
+        };
+    }
+
+    // Everything the UI prints comes from here (F1.4).
+    static measure(blocks) {
+        const W = STAGES.WAKE;
+        const m = [0, 0, 0, 0, 0];
+        if (!blocks.length) {
+            return { tst: 0, tib: 0, latency: 0, wasoMins: 0, sleepEfficiency: 0, n1P: 0, n2P: 0, n3P: 0, remP: 0, remLatency: null };
+        }
+        const t0 = blocks[0].start;
+        const last = blocks[blocks.length - 1];
+        const tib = last.start + last.duration - t0;
+        blocks.forEach((b) => { m[b.stage] += b.duration; });
+        const tst = tib - m[W];
+        const first = blocks.find((b) => b.stage !== W);
+        const latency = first ? first.start - t0 : tib;
+        const firstRem = blocks.find((b) => b.stage === STAGES.REM);
+        const pct = (x) => (tst > 0 ? x / tst : 0);
+        return {
+            tst, tib, latency,
+            wasoMins: m[W] - latency,
+            sleepEfficiency: tib > 0 ? (tst / tib) * 100 : 0,
+            n1P: pct(m[STAGES.N1]), n2P: pct(m[STAGES.N2]), n3P: pct(m[STAGES.N3]), remP: pct(m[STAGES.REM]),
+            remLatency: firstRem && first ? firstRem.start - first.start : null,
         };
     }
 }
 
+// Two-process model curves (Borbély 1982; Daan, Beersma and Borbély 1984) plus hormone shapes.
+// Pure maths; the drawing code samples these.
 class TwoProcessModel {
-    static getCurves(tst, chronotype, caffeine, caffeineTime, caffeineMetabolism, blueLight) {
-        const tau_r = 18.2 * 60;
-        const tau_d = 4.2 * 60;
+    static getCurves(caffeine, caffeineTime, caffeineMetabolism) {
+        return {
+            tau_r: 18.2 * 60, // rise time constant while awake, min
+            tau_d: 4.2 * 60,  // decay time constant while asleep, min
+            caffeine, caffeineTime,
+            halfLife: ScientificConstants.CAFFEINE_HALF_LIFE[caffeineMetabolism] || 5,
+        };
+    }
 
-        let peakTime = 240 + 180;
-        if (chronotype === 'lark') peakTime -= 120;
-        if (chronotype === 'owl') peakTime += 180;
+    // Process S. Awake since yesterday's wake-up (sleepEnd - 24 h), asleep from sleepStart to sleepEnd.
+    // The level at yesterday's wake-up is the steady state of the same day repeated.
+    static sleepPressure(t, sleepStart, sleepEnd, m) {
+        const prevWake = sleepEnd - 1440;
+        const a = Math.exp(-(sleepStart - prevWake) / m.tau_r);
+        const d = Math.exp(-(sleepEnd - sleepStart) / m.tau_d);
+        const S0 = (d * (1 - a)) / (1 - d * a);
+        const sOnset = 1 - (1 - S0) * a;
+        const sEnd = sOnset * d;
+        let S;
+        if (t < sleepStart) S = 1 - (1 - S0) * Math.exp(-(t - prevWake) / m.tau_r);
+        else if (t < sleepEnd) S = sOnset * Math.exp(-(t - sleepStart) / m.tau_d);
+        else S = 1 - (1 - sEnd) * Math.exp(-(t - sleepEnd) / m.tau_r);
+        // Caffeine masks part of the felt pressure while it is in the body.
+        const intake = sleepStart - m.caffeineTime * 60;
+        if (m.caffeine > 0 && t >= intake) S -= m.caffeine * 0.1 * Math.pow(0.5, (t - intake) / 60 / m.halfLife);
+        return Math.max(0, S);
+    }
 
-        if (blueLight) peakTime += 60;
-
-        let halfLife = 6;
-        if (caffeineMetabolism === 'fast') halfLife = 4;
-        if (caffeineMetabolism === 'slow') halfLife = 8;
-
-        return { tau_r, tau_d, peakTime, caffeine, caffeineTime, halfLife };
+    // Melatonin, 0..1: rises 2 h before habitual bedtime, falls 30 min after the habitual window ends.
+    static melatonin(t, on, off) {
+        const sig = (x) => 1 / (1 + Math.exp(-x));
+        return sig((t - on) / 25) * sig((off - t) / 40);
     }
 }
 
