@@ -637,7 +637,7 @@ body.compare-active .dashboard-content {
 .brain-strip {
     display: grid;
     grid-template-columns: 260px minmax(0, 1fr);
-    height: 204px;
+    height: 236px; /* fits a 3-line caption without moving when the stage changes */
     background: var(--bg-primary);
     border-top: 1px solid var(--line);
     flex-shrink: 0;
@@ -736,6 +736,16 @@ body.compare-active .dashboard-content {
     color: var(--text-primary);
     white-space: nowrap;
     min-width: 0;
+    /* Fixed width so the buttons beside it never jump when the stage name changes. */
+    width: 17rem;
+    max-width: 100%;
+    box-sizing: border-box;
+}
+
+.stage-chip .stage-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    min-width: 0;
 }
 
 .stage-chip i {
@@ -760,6 +770,7 @@ body.compare-active .dashboard-content {
     font-weight: 400;
     color: var(--text-secondary);
     font-variant-numeric: tabular-nums;
+    margin-left: auto;
 }
 
 .brain-buttons {
@@ -830,8 +841,8 @@ body.compare-active .dashboard-content {
     color: var(--text-heading);
     display: -webkit-box;
     -webkit-box-orient: vertical;
-    -webkit-line-clamp: 2;
-    line-clamp: 2;
+    -webkit-line-clamp: 3;
+    line-clamp: 3;
     overflow: hidden;
 }
 
