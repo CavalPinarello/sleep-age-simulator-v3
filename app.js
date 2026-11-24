@@ -160,6 +160,12 @@ class HypnogramGenerator {
             groups.push({ min: 35 * sdb, zone: 'any', per: 5 });
         }
 
+        // Wake-up time is mostly fixed (alarm, habit), so wake caused by apnea, toilet
+        // trips and night sweats is taken mostly out of sleep rather than added to the
+        // time in bed. 70% comes out of TST; the other 30% is a slightly later rise.
+        // Caffeine and alcohol are excluded: their TST cost is already a measured value.
+        if (!infant) tst -= 0.7 * ((meno ? 20 : 0) + 35 * sdb + 10 * nocturia);
+
         sol = Math.max(infant ? 3 : 5, sol);
         n1 = Math.max(0, n1);
         n3 = Math.max(infant ? 0 : 1, n3);
@@ -741,7 +747,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const labelW = Math.max(...rows.map(([, name]) => ctx.measureText(name).width), ...labels.map((n) => ctx.measureText(n).width));
 
         // Narrow plots put the overlay legend in a strip under the hour labels so it hides nothing.
-        const activeOverlays = OVERLAYS.filter((o) => view[o.key]);
+        const activeOverlays = OVERLAYS.filter((o) => view[o.key] && !(params.infant && (o.key === 'showProcessC' || o.key === 'showCortisol')));
         const legendBelow = cssW - labelW - 34 < 480 && activeOverlays.length > 0;
         const legendRows = legendBelow ? Math.ceil(activeOverlays.length / 2) : 0;
         const pad = { top: 52, right: 16, bottom: 34 + legendRows * 18, left: Math.ceil(labelW) + 18 };
@@ -863,7 +869,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         if (legendBelow) drawOverlayStrip(ctx, activeOverlays, pad.left, bottom + 38, width);
-        else drawOverlayLegend(ctx, right, pad.top);
+        else drawOverlayLegend(ctx, right, pad.top, params);
     }
 
     function drawOverlayStrip(ctx, on, left, top, width) {
@@ -902,8 +908,9 @@ document.addEventListener('DOMContentLoaded', () => {
             const m = TwoProcessModel.getCurves(state.caffeine, state.caffeineTime, state.caffeineMetabolism);
             curve(ctx, '#facc15', v, (t) => TwoProcessModel.sleepPressure(t, sleepStart, sleepEnd, m));
         }
-        if (view.showProcessC) {
-            // Newborns have no recommended window; 11 h keeps the curve defined (see report).
+        // Newborns have no melatonin or cortisol day-night rhythm until about 2 to 3 months,
+        // so those two curves are not drawn at age 0.
+        if (view.showProcessC && !params.infant) {
             const len = params.windowLength || 11 * 60;
             const on = params.habitualBedtime - 120 + params.clockShift;
             const off = params.habitualBedtime + len + 30 + params.clockShift;
@@ -921,7 +928,7 @@ document.addEventListener('DOMContentLoaded', () => {
             }
             curve(ctx, '#2dd4bf', v, (t) => 0.1 + (amp ? amp * Math.exp(-((t - centre) ** 2) / (2 * 25 * 25)) : 0));
         }
-        if (view.showCortisol) {
+        if (view.showCortisol && !params.infant) {
             const wake = sleepEnd;
             curve(ctx, '#f97316', v, (t) => {
                 if (t < wake - 180) return 0.2;
@@ -931,8 +938,8 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    function drawOverlayLegend(ctx, right, top) {
-        const on = OVERLAYS.filter((o) => view[o.key]);
+    function drawOverlayLegend(ctx, right, top, params) {
+        const on = OVERLAYS.filter((o) => view[o.key] && !(params.infant && (o.key === 'showProcessC' || o.key === 'showCortisol')));
         if (!on.length) return;
         ctx.font = `400 12px ${FONT}`;
         const textW = Math.max(...on.map((o) => ctx.measureText(o.name).width));
