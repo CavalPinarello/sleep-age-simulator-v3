@@ -259,6 +259,11 @@ export const HEX = {
 };
 export const PALETTE = Object.fromEntries(Object.entries(HEX).map(([k, h]) => [k, hexToLinear(h)]));
 
+// The crest turns toward near white above this slow-wave intensity. The brief has 0.8 and 2.5,
+// which an adult wave (size at most 0.75 at age 25) never reaches; 0.5 keeps the order
+// (children brightest, older adults no crest at all) and lets a young adult's crest show.
+export const CREST_FROM = 0.5, CREST_GAIN = 1.4;
+
 // Writes linear RGB per vertex into out (length 3n). Order as in D5.
 export function paintHemi(F, topo, S, out, P = PALETTE) {
     const o = {};
@@ -277,7 +282,7 @@ export function paintHemi(F, topo, S, out, P = PALETTE) {
         mix(P.ALPHA, o.al);
         mix(P.VERTEX, o.vx);
         mix(P.SLOW, 1.05 * o.sw);
-        if (o.sw > 0.8) mix(P.SLOW_CREST, (o.sw - 0.8) * 2.5);
+        if (o.sw > CREST_FROM) mix(P.SLOW_CREST, (o.sw - CREST_FROM) * CREST_GAIN);
         mix(P.SPINDLE, o.sp);
         mix(P.REM_UP, 0.85 * o.up);
         mix(P.ALPHA, o.fl);
