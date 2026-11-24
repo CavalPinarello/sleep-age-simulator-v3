@@ -479,6 +479,8 @@ document.addEventListener('DOMContentLoaded', () => {
     const sims = { A: null, B: null };
     let activeProfile = 'A';
     let compareMode = false;
+    // Stage 2: one moment of the night (minutes after 18:00) shared by every panel.
+    let moment = null, playing = false, lastView = null;
 
     const COUNTER_MAX = { alcohol: 6, caffeine: 6, nocturia: 5 };
     const STAGE_COLORS = {
@@ -589,7 +591,8 @@ document.addEventListener('DOMContentLoaded', () => {
     function onStateChange() {
         simulate(activeProfile);
         updateChrome();
-        redraw();
+        redraw('state');
+        setMoment(moment, 'state');
     }
 
     function switchProfile(id) {
@@ -663,7 +666,7 @@ document.addEventListener('DOMContentLoaded', () => {
             $(id).addEventListener('change', (e) => {
                 view[key] = e.target.checked;
                 updateChrome();
-                redraw();
+                redraw('state');
             });
         });
 
@@ -678,7 +681,8 @@ document.addEventListener('DOMContentLoaded', () => {
         $('viz-b').hidden = !compareMode;
         if (!compareMode) switchProfile('A');
         updateChrome();
-        requestAnimationFrame(redraw);
+        setMoment(moment, 'state');
+        requestAnimationFrame(() => redraw('compare'));
     });
 
     document.querySelectorAll('.profile-tabs .tab').forEach((tab) => {
@@ -721,10 +725,13 @@ document.addEventListener('DOMContentLoaded', () => {
         return { viewStart, viewEnd, labels: anyInfant ? ['Active (REM)', 'Quiet (NREM)'] : ['Wake'] };
     }
 
-    function redraw() {
+    function redraw(reason = 'state') {
         const v = computeView();
+        lastView = v;
         drawPanel('A', v);
         if (compareMode) drawPanel('B', v);
+        placePlayheads();
+        document.dispatchEvent(new CustomEvent('sleepsim:change', { detail: { reason } }));
     }
 
     function drawPanel(id, v) {
@@ -758,7 +765,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const bottom = pad.top + height;
         const right = pad.left + width;
         if (width <= 20 || height <= 20) return;
-        Object.assign(canvas.dataset, { viewStart, viewEnd, padLeft: pad.left, plotWidth: width });
+        Object.assign(canvas.dataset, { viewStart, viewEnd, padLeft: pad.left, plotWidth: width, padTop: pad.top, plotHeight: height });
         const span = viewEnd - viewStart;
         const timeToX = (t) => pad.left + ((t - viewStart) / span) * width;
         const valueToY = (val) => bottom - val * height * 0.9;
@@ -1015,12 +1022,142 @@ document.addEventListener('DOMContentLoaded', () => {
             <div class="metric-card"><div class="metric-value"${color ? ` style="color: ${color}"` : ''}>${value}</div><div class="metric-label">${label}</div></div>`).join('');
     }
 
+    // ---------------------------------------------------------------- moment, playhead and play (Stage 2)
+    const visiblePanels = () => (compareMode ? ['A', 'B'] : ['A']);
+
+    // Stage at clock time t, or -1 when out of bed (before the first block or from wake-up on).
+    function stageAt(id, t) {
+        const r = sims[id];
+        if (!r || !r.blocks.length) return -1;
+        const b = r.blocks;
+        if (t < b[0].start || t >= r.params.sleepEnd) return -1;
+        let lo = 0, hi = b.length - 1;
+        while (lo < hi) {
+            const mid = (lo + hi + 1) >> 1;
+            if (b[mid].start <= t) lo = mid; else hi = mid - 1;
+        }
+        return b[lo].stage;
+    }
+
+    const playheads = {};
+    document.querySelectorAll('.canvas-container').forEach((box) => {
+        const c = box.querySelector('canvas');
+        const el = document.createElement('div');
+        el.className = 'playhead';
+        el.setAttribute('aria-hidden', 'true');
+        el.hidden = true;
+        box.append(el);
+        playheads[c === canvases.B ? 'B' : 'A'] = el;
+    });
+
+    function placePlayheads() {
+        for (const id of ['A', 'B']) {
+            const el = playheads[id], d = canvases[id].dataset;
+            if (!el) continue;
+            const vs = +d.viewStart, ve = +d.viewEnd, w = +d.plotWidth;
+            const show = moment !== null && (id === 'A' || compareMode) && w > 0 && moment >= vs && moment <= ve;
+            el.hidden = !show;
+            if (!show) continue;
+            const x = +d.padLeft + ((moment - vs) / (ve - vs)) * w;
+            el.style.top = `${d.padTop}px`;
+            el.style.height = `${d.plotHeight}px`;
+            el.style.transform = `translateX(${x.toFixed(1)}px)`;
+        }
+    }
+
+    function setMoment(t, source = 'state') {
+        if (t === null || t === undefined || !Number.isFinite(+t)) return;
+        const v = computeView();
+        const next = clamp(+t, v.viewStart, v.viewEnd);
+        const prev = moment;
+        moment = next;
+        placePlayheads();
+        document.dispatchEvent(new CustomEvent('sleepsim:moment', { detail: { t: next, prev, source } }));
+    }
+
+    const latestEnd = () => Math.max(...visiblePanels().map((id) => (sims[id] ? sims[id].params.sleepEnd : -Infinity)));
+    let lastTick = 0;
+    function tick(now) {
+        if (!playing) return;
+        const dt = Math.min(0.1, Math.max(0, (now - lastTick) / 1000));
+        lastTick = now;
+        const end = latestEnd();
+        const next = moment + 8 * dt;
+        if (next >= end) {
+            setMoment(end, 'play');
+            pause();
+            return;
+        }
+        setMoment(next, 'play');
+        requestAnimationFrame(tick);
+    }
+    function play() {
+        if (playing || !sims.A) return;
+        const start = sims.A.params.bedtime - 5;
+        if (moment === null || moment < start || moment >= latestEnd() - 0.01) setMoment(start, 'play');
+        playing = true;
+        lastTick = performance.now();
+        document.dispatchEvent(new CustomEvent('sleepsim:play', { detail: { playing: true } }));
+        requestAnimationFrame(tick);
+    }
+    function pause() {
+        if (!playing) return;
+        playing = false;
+        document.dispatchEvent(new CustomEvent('sleepsim:play', { detail: { playing: false } }));
+    }
+    document.addEventListener('visibilitychange', () => { if (document.hidden) pause(); });
+
+    // Pointer on the hypnogram: hover follows with a mouse, click or drag sets and pauses,
+    // a horizontal finger drag scrubs while vertical drags still scroll the page.
+    function timeAtX(canvas, clientX) {
+        const d = canvas.dataset, r = canvas.getBoundingClientRect();
+        const vs = +d.viewStart, ve = +d.viewEnd, w = +d.plotWidth;
+        if (!(w > 0)) return null;
+        return vs + ((clientX - r.left - +d.padLeft) / w) * (ve - vs);
+    }
+    for (const id of ['A', 'B']) {
+        const c = canvases[id];
+        let drag = null; // { touch, x0, y0, active }
+        c.addEventListener('pointerdown', (e) => {
+            if (e.pointerType === 'mouse' && e.button !== 0) return;
+            const touch = e.pointerType !== 'mouse';
+            drag = { touch, x0: e.clientX, y0: e.clientY, active: !touch, id: e.pointerId };
+            if (!touch) {
+                pause();
+                try { c.setPointerCapture(e.pointerId); } catch (err) { /* ignore */ }
+                setMoment(timeAtX(c, e.clientX), 'drag');
+            }
+        });
+        c.addEventListener('pointermove', (e) => {
+            if (drag && drag.id === e.pointerId) {
+                if (!drag.active && Math.abs(e.clientX - drag.x0) > 8 && Math.abs(e.clientX - drag.x0) > Math.abs(e.clientY - drag.y0)) {
+                    drag.active = true;
+                    pause();
+                    try { c.setPointerCapture(e.pointerId); } catch (err) { /* ignore */ }
+                }
+                if (drag.active) setMoment(timeAtX(c, e.clientX), 'drag');
+                return;
+            }
+            if (e.pointerType === 'mouse' && e.buttons === 0 && !playing) setMoment(timeAtX(c, e.clientX), 'hover');
+        });
+        const end = (e) => {
+            if (!drag || drag.id !== e.pointerId) return;
+            if (e.type === 'pointerup' && drag.touch && !drag.active) { // a tap
+                pause();
+                setMoment(timeAtX(c, e.clientX), 'drag');
+            }
+            drag = null;
+        };
+        c.addEventListener('pointerup', end);
+        c.addEventListener('pointercancel', end);
+    }
+
     // ---------------------------------------------------------------- start
     let pending = false;
     const scheduleRedraw = () => {
         if (pending) return;
         pending = true;
-        requestAnimationFrame(() => { pending = false; redraw(); });
+        requestAnimationFrame(() => { pending = false; redraw('resize'); });
     };
     if (window.ResizeObserver) {
         const ro = new ResizeObserver(scheduleRedraw);
@@ -1028,8 +1165,73 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     window.addEventListener('resize', scheduleRedraw);
 
+    // URL test hooks (Stage 2 brief D3.9). Read only when the URL has them.
+    const query = new URLSearchParams(location.search);
+    const readJSON = (key) => {
+        if (!query.has(key)) return null;
+        try {
+            const o = JSON.parse(query.get(key));
+            return o && typeof o === 'object' ? o : null;
+        } catch (e) {
+            console.warn(`Ignoring ${key}= in the URL: not valid JSON`);
+            return null;
+        }
+    };
+    const mergeState = (target, o) => {
+        for (const k of Object.keys(defaultState)) {
+            if (k in o && typeof o[k] === typeof defaultState[k]) target[k] = o[k];
+        }
+        if (typeof target.age === 'number') target.age = clamp(Math.round(target.age), 0, 100);
+        syncMenopause(target, false);
+    };
+    const hookA = readJSON('state'), hookB = readJSON('stateB');
+    const hookT = query.has('t') ? parseFloat(query.get('t')) : NaN;
+    if (hookA) mergeState(states.A, hookA);
+
     switchProfile('A');
     simulate('A');
-    redraw();
-    if (document.fonts && document.fonts.ready) document.fonts.ready.then(redraw);
+    redraw('state');
+    if (hookB) {
+        states.B = clone(states.A);
+        mergeState(states.B, hookB);
+        simulate('B');
+        const box = $('compare-mode-toggle');
+        box.checked = true;
+        box.dispatchEvent(new Event('change'));
+        redraw('compare');
+    }
+    if (document.fonts && document.fonts.ready) document.fonts.ready.then(() => redraw('resize'));
+
+    // First moment: the middle of A's first N3 block, else 20 minutes after sleep onset (D3.7).
+    {
+        const r = sims.A;
+        let t0 = 0;
+        if (r) {
+            const n3 = r.blocks.find((b) => b.stage === STAGES.N3);
+            t0 = n3 ? n3.start + n3.duration / 2 : r.params.sleepOnset + 20;
+        }
+        setMoment(Number.isFinite(hookT) ? hookT : t0, 'init');
+    }
+
+    window.SleepSim = {
+        STAGES, STAGE_COLORS, fmtClock,
+        panels: visiblePanels,
+        get: (id) => (sims[id] ? { sim: sims[id], state: clone(states[id]) } : null),
+        view: () => lastView,
+        stageAt,
+        moment: () => moment,
+        setMoment,
+        play, pause,
+        playing: () => playing,
+    };
+    document.dispatchEvent(new CustomEvent('sleepsim:ready'));
+
+    // Opened from file://, Chrome refuses to load brain.js as a module. Say why in the strip.
+    if (location.protocol === 'file:' && !window.SleepSimBrain) {
+        document.querySelectorAll('.brain-strip').forEach((el) => {
+            el.hidden = false;
+            el.classList.add('brain-offline');
+            el.querySelector('.brain-box').innerHTML = '<p class="brain-fallback">The 3D brain needs the page to be opened from a web server, for example python3 -m http.server.</p>';
+        });
+    }
 });

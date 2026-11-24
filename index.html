@@ -9,7 +9,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="style.css">
+    <link rel="stylesheet" href="style.css?v=4">
 </head>
 
 <body>
@@ -179,14 +179,38 @@
                         <canvas id="hypnogram" class="hypno-canvas" role="img" aria-label="Hypnogram of the simulated night"></canvas>
                     </div>
                     <p class="chart-caption" id="infant-caption-a" hidden>Newborns sleep 14 to 17 hours a day in bouts of 2 to 4 hours. This is the night part.</p>
-                    <div class="dashboard">
-                        <h3>Sleep stages</h3>
-                        <div class="dashboard-content">
-                            <div class="pie-chart-container">
-                                <canvas id="pie-chart" class="pie-canvas"></canvas>
-                                <div class="legend" id="pie-legend"></div>
+                    <div class="lower-deck">
+                        <section class="brain-strip" id="brain-a" aria-label="Brain view" hidden>
+                            <div class="brain-box"></div>
+                            <div class="brain-info">
+                                <div class="brain-head">
+                                    <span class="stage-chip"><i></i><span class="stage-name"></span><span class="stage-clock"></span></span>
+                                    <div class="brain-buttons">
+                                        <button type="button" class="brain-play">Play the night</button>
+                                        <div class="brain-views" role="group" aria-label="View">
+                                            <button type="button" data-view="top" aria-pressed="true">Top</button>
+                                            <button type="button" data-view="side" aria-pressed="false">Side</button>
+                                            <button type="button" data-view="inside" aria-pressed="false">Inside</button>
+                                        </div>
+                                        <button type="button" class="brain-hide">Hide</button>
+                                    </div>
+                                </div>
+                                <p class="brain-caption" aria-live="polite"></p>
+                                <div class="brain-legend"></div>
+                                <div class="brain-ribbon"><canvas aria-hidden="true"></canvas><input type="range" aria-label="Time of night"></div>
+                                <p class="brain-foot">Schematic on an adult template brain. Slow motion. Not a recording.</p>
                             </div>
-                            <div class="metrics-grid" id="metrics-display"></div>
+                            <button type="button" class="brain-show">Show brain</button>
+                        </section>
+                        <div class="dashboard">
+                            <h3>Sleep stages</h3>
+                            <div class="dashboard-content">
+                                <div class="pie-chart-container">
+                                    <canvas id="pie-chart" class="pie-canvas"></canvas>
+                                    <div class="legend" id="pie-legend"></div>
+                                </div>
+                                <div class="metrics-grid" id="metrics-display"></div>
+                            </div>
                         </div>
                     </div>
                 </section>
@@ -197,22 +221,47 @@
                         <canvas id="hypnogram-b" class="hypno-canvas" role="img" aria-label="Hypnogram of night B"></canvas>
                     </div>
                     <p class="chart-caption" id="infant-caption-b" hidden>Newborns sleep 14 to 17 hours a day in bouts of 2 to 4 hours. This is the night part.</p>
-                    <div class="dashboard">
-                        <h3>Sleep stages</h3>
-                        <div class="dashboard-content">
-                            <div class="pie-chart-container">
-                                <canvas id="pie-chart-b" class="pie-canvas"></canvas>
-                                <div class="legend" id="pie-legend-b"></div>
+                    <div class="lower-deck">
+                        <section class="brain-strip" id="brain-b" aria-label="Brain view" hidden>
+                            <div class="brain-box"></div>
+                            <div class="brain-info">
+                                <div class="brain-head">
+                                    <span class="stage-chip"><i></i><span class="stage-name"></span><span class="stage-clock"></span></span>
+                                    <div class="brain-buttons">
+                                        <button type="button" class="brain-play">Play the night</button>
+                                        <div class="brain-views" role="group" aria-label="View">
+                                            <button type="button" data-view="top" aria-pressed="true">Top</button>
+                                            <button type="button" data-view="side" aria-pressed="false">Side</button>
+                                            <button type="button" data-view="inside" aria-pressed="false">Inside</button>
+                                        </div>
+                                        <button type="button" class="brain-hide">Hide</button>
+                                    </div>
+                                </div>
+                                <p class="brain-caption" aria-live="polite"></p>
+                                <div class="brain-legend"></div>
+                                <div class="brain-ribbon"><canvas aria-hidden="true"></canvas><input type="range" aria-label="Time of night"></div>
+                                <p class="brain-foot">Schematic on an adult template brain. Slow motion. Not a recording.</p>
                             </div>
-                            <div class="metrics-grid" id="metrics-display-b"></div>
+                            <button type="button" class="brain-show">Show brain</button>
+                        </section>
+                        <div class="dashboard">
+                            <h3>Sleep stages</h3>
+                            <div class="dashboard-content">
+                                <div class="pie-chart-container">
+                                    <canvas id="pie-chart-b" class="pie-canvas"></canvas>
+                                    <div class="legend" id="pie-legend-b"></div>
+                                </div>
+                                <div class="metrics-grid" id="metrics-display-b"></div>
+                            </div>
                         </div>
                     </div>
                 </section>
             </div>
-            <p class="chart-note">Typical values for healthy sleepers. Lifestyle effects are averages from sleep-lab studies and vary a lot between people. <a href="https://github.com/CavalPinarello/sleep-age-simulator-v3#sources" target="_blank" rel="noopener">Sources</a></p>
+            <p class="chart-note">Typical values for healthy sleepers. Lifestyle effects are averages from sleep-lab studies and vary a lot between people. Brain surface: FreeSurfer fsaverage. <a href="https://github.com/CavalPinarello/sleep-age-simulator-v3#sources" target="_blank" rel="noopener">Sources</a></p>
         </div>
     </div>
-    <script src="app.js?v=3"></script>
+    <script src="app.js?v=4"></script>
+    <script type="module" src="brain.js?v=2"></script>
 </body>
 
 </html>
