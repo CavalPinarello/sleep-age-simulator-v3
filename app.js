@@ -452,649 +452,571 @@ class TwoProcessModel {
 // --- APP LOGIC ---
 
 document.addEventListener('DOMContentLoaded', () => {
-    console.log('DOM Loaded');
     const generator = new HypnogramGenerator();
+    const $ = (id) => document.getElementById(id);
 
-    // Canvas References
-    const canvasA = document.getElementById('hypnogram');
-    const canvasB = document.getElementById('hypnogram-b');
-    const pieCanvasA = document.getElementById('pie-chart');
-    const pieCanvasB = document.getElementById('pie-chart-b');
+    const canvases = { A: $('hypnogram'), B: $('hypnogram-b') };
+    const pies = { A: $('pie-chart'), B: $('pie-chart-b') };
+    const suffix = { A: '', B: '-b' };
 
-    // Default State Template
+    // Model inputs only. View options (overlays) are global, see `view`.
     const defaultState = {
-        gender: 'male',
-        age: 25,
-        jetLag: 'none',
-        socialJetLag: false,
-        sdbSeverity: 0,
-        isMenopausal: false,
-        chronotype: 'normal',
-        alcohol: 0,
-        caffeine: 0,
-        caffeineTime: 0, // Hours before bed
-        caffeineMetabolism: 'normal', // fast, normal, slow
-        nocturia: 0,
-        blueLight: false,
-        showProcessS: false,
-        showProcessC: false,
-        showGH: false,
-        showCortisol: false
+        gender: 'male', age: 25, jetLag: 'none', socialJetLag: false, sdbSeverity: 0,
+        isMenopausal: false, chronotype: 'normal', alcohol: 0, caffeine: 0, caffeineTime: 0,
+        caffeineMetabolism: 'normal', nocturia: 0, blueLight: false,
     };
-
-    // Global State
-    const states = {
-        A: JSON.parse(JSON.stringify(defaultState)),
-        B: JSON.parse(JSON.stringify(defaultState))
-    };
-
+    const clone = (o) => JSON.parse(JSON.stringify(o));
+    const states = { A: clone(defaultState), B: null };
+    const view = { showProcessS: false, showProcessC: false, showGH: false, showCortisol: false };
+    const sims = { A: null, B: null };
     let activeProfile = 'A';
     let compareMode = false;
-    let cachedSimulations = { A: null, B: null };
 
-    // --- State Management ---
+    const COUNTER_MAX = { alcohol: 6, caffeine: 6, nocturia: 5 };
+    const STAGE_COLORS = {
+        [STAGES.WAKE]: '#ef4444', [STAGES.REM]: '#f59e0b', [STAGES.N1]: '#38bdf8',
+        [STAGES.N2]: '#3b82f6', [STAGES.N3]: '#1d4ed8',
+    };
+    const OVERLAYS = [
+        { key: 'showProcessS', name: 'Sleep pressure', color: '#facc15' },
+        { key: 'showProcessC', name: 'Melatonin', color: '#a78bfa' },
+        { key: 'showGH', name: 'Growth hormone', color: '#2dd4bf' },
+        { key: 'showCortisol', name: 'Cortisol', color: '#f97316' },
+    ];
+    const FONT = 'Inter, system-ui, sans-serif';
 
-    function switchProfile(profileId) {
-        activeProfile = profileId;
+    // ---------------------------------------------------------------- helpers
+    const menoVisible = (s) => s.gender === 'female' && s.age >= 40 && s.age <= 60;
 
-        // Update Tabs UI
-        document.querySelectorAll('.profile-tabs .tab').forEach(t => {
-            t.classList.toggle('active', t.dataset.profile === profileId);
-        });
+    const fmtDur = (mins) => {
+        const r = Math.max(0, Math.round(mins));
+        const h = Math.floor(r / 60), m = r % 60;
+        if (h === 0) return `${m} m`;
+        return m === 0 ? `${h} h` : `${h} h ${m} m`;
+    };
 
-        // Update Sidebar styling
-        const mask = document.getElementById('controls-mask');
-        if (mask) {
-            mask.className = '';
-            mask.classList.add(`profile-${profileId.toLowerCase()}-active`);
+    const fmtClock = (t) => { // minutes after 18:00
+        const total = ((Math.round(18 * 60 + t) % 1440) + 1440) % 1440;
+        return `${String(Math.floor(total / 60)).padStart(2, '0')}:${String(total % 60).padStart(2, '0')}`;
+    };
+
+    function describe(s) {
+        const adult = s.age >= 18;
+        const who = s.age < 1 ? 'baby' : s.gender === 'female' ? (adult ? 'woman' : 'girl') : (adult ? 'man' : 'boy');
+        const extras = [];
+        if (s.alcohol) extras.push(`${s.alcohol} drink${s.alcohol > 1 ? 's' : ''}`);
+        if (s.caffeine) extras.push(`${s.caffeine} coffee${s.caffeine > 1 ? 's' : ''}`);
+        if (s.blueLight) extras.push('screen');
+        if (s.chronotype !== 'normal') extras.push(s.chronotype);
+        if (s.socialJetLag) extras.push('late weekend');
+        if (s.jetLag !== 'none') extras.push('jet lag');
+        if (s.sdbSeverity) extras.push({ 3: 'mild apnea', 6: 'moderate apnea', 10: 'severe apnea' }[s.sdbSeverity] || 'apnea');
+        if (s.nocturia) extras.push(`${s.nocturia} toilet trip${s.nocturia > 1 ? 's' : ''}`);
+        if (s.isMenopausal && menoVisible(s)) extras.push('night sweats');
+        return { base: s.age < 1 ? 'baby' : `${who}, ${s.age}`, extras };
+    }
+
+    // One rule for the perimenopause row (F7.8): hidden means unticked.
+    function syncMenopause(s, isActive) {
+        const visible = menoVisible(s);
+        if (!visible) s.isMenopausal = false;
+        if (isActive) {
+            $('menopause-group').hidden = !visible;
+            $('menopause-toggle').checked = s.isMenopausal;
         }
-
-        // Update Inputs to match State
-        updateInputsFromState(states[activeProfile]);
     }
 
+    // ---------------------------------------------------------------- inputs <-> state
     function updateInputsFromState(s) {
-        // Values
-        const setVal = (id, val) => {
-            const el = document.getElementById(id);
-            if (el) el.value = val;
-        };
-        const setTxt = (id, val) => {
-            const el = document.getElementById(id);
-            if (el) el.textContent = val;
-        };
-        const setChk = (id, val) => {
-            const el = document.getElementById(id);
-            if (el) el.checked = val;
-        };
-
-        setVal('age-slider', s.age);
-        setTxt('age-value', s.age);
-
-        // Gender Radios
-        document.querySelectorAll('input[name="gender"]').forEach(r => {
-            r.checked = (r.value === s.gender);
-        });
-
-        setVal('chronotype-select', s.chronotype);
-        setVal('jetlag-select', s.jetLag);
-        setChk('social-jetlag-toggle', s.socialJetLag);
-
-        setTxt('alcohol-display', s.alcohol);
-        setVal('alcohol-input', s.alcohol); // Hidden input for counter logic
-
-        setTxt('caffeine-display', s.caffeine);
-        setVal('caffeine-input', s.caffeine);
-
-        setVal('caffeine-time-slider', s.caffeineTime);
-        setTxt('caffeine-time-val', s.caffeineTime);
-
-        document.querySelectorAll('input[name="metabolism"]').forEach(r => {
-            r.checked = (r.value === s.caffeineMetabolism);
-        });
-
-        setTxt('nocturia-display', s.nocturia);
-        setVal('nocturia-input', s.nocturia);
-
-        setChk('blue-light-toggle', s.blueLight);
-        setVal('sdb-slider', s.sdbSeverity);
-        setChk('menopause-toggle', s.isMenopausal);
-
-        // Menopause Visibility
-        const menGrp = document.getElementById('menopause-group');
-        if (s.age >= 40 && s.age <= 60 && s.gender === 'female') menGrp.style.display = 'block';
-        else menGrp.style.display = 'none';
-
-        // Overlays
-        setChk('process-s-toggle', s.showProcessS);
-        setChk('process-c-toggle', s.showProcessC);
-        setChk('gh-toggle', s.showGH);
-        setChk('cortisol-toggle', s.showCortisol);
+        $('age-slider').value = s.age;
+        $('age-value').textContent = s.age;
+        document.querySelectorAll('input[name="gender"]').forEach((r) => { r.checked = r.value === s.gender; });
+        $('chronotype-select').value = s.chronotype;
+        $('jetlag-select').value = s.jetLag;
+        $('social-jetlag-toggle').checked = s.socialJetLag;
+        $('alcohol-display').textContent = s.alcohol;
+        $('caffeine-display').textContent = s.caffeine;
+        $('nocturia-display').textContent = s.nocturia;
+        $('caffeine-time-slider').value = s.caffeineTime;
+        $('caffeine-time-val').textContent = s.caffeineTime;
+        document.querySelectorAll('input[name="metabolism"]').forEach((r) => { r.checked = r.value === s.caffeineMetabolism; });
+        document.querySelectorAll('input[name="sdb"]').forEach((r) => { r.checked = +r.value === s.sdbSeverity; });
+        $('blue-light-toggle').checked = s.blueLight;
+        syncMenopause(s, true);
     }
 
-    // --- Interaction ---
-
-    // Toggle Compare Mode
-    const compareToggle = document.getElementById('compare-mode-toggle');
-    if (compareToggle) {
-        compareToggle.addEventListener('change', (e) => {
-            compareMode = e.target.checked;
-            document.body.classList.toggle('compare-active', compareMode);
-
-            const tabs = document.getElementById('profile-tabs');
-            const vizB = document.getElementById('viz-b');
-
-            if (compareMode) {
-                tabs.style.display = 'flex';
-                vizB.style.display = 'flex';
-                // Trigger resize after layout reflow
-                setTimeout(() => {
-                    resizeAll();
-                    runSimulation('B');
-                }, 50);
-            } else {
-                tabs.style.display = 'none';
-                vizB.style.display = 'none';
-                switchProfile('A'); // Force back to A
-                // Trigger resize after layout reflow
-                setTimeout(() => {
-                    resizeAll();
-                }, 50);
-            }
-
-            // Toggle Label A Visibility
-            const labelA = document.querySelector('#viz-a .viz-label');
-            if (labelA) labelA.style.display = compareMode ? 'block' : 'none';
-        });
-    }
-
-    // Profile Tabs
-    document.querySelectorAll('.profile-tabs .tab').forEach(tab => {
-        tab.addEventListener('click', () => {
-            switchProfile(tab.dataset.profile);
-        });
-    });
-
-    // Update Counter (Global Helper Override)
-    window.updateCounter = (key, change) => {
+    function updateChrome() {
         const s = states[activeProfile];
-        s[key] = Math.max(0, Math.min(10, s[key] + change));
+        $('caffeine-details').hidden = !(s.caffeine > 0);
+        document.querySelectorAll('.counter-input').forEach((c) => {
+            const key = c.dataset.key;
+            c.querySelector('[data-step="-1"]').disabled = s[key] <= 0;
+            c.querySelector('[data-step="1"]').disabled = s[key] >= COUNTER_MAX[key];
+        });
+        const count = (n) => (n ? `(${n})` : '');
+        $('count-clock').textContent = count((s.chronotype !== 'normal') + s.socialJetLag + (s.jetLag !== 'none'));
+        $('count-health').textContent = count((s.sdbSeverity > 0) + (s.nocturia > 0) + (s.isMenopausal && menoVisible(s)));
+        $('count-overlays').textContent = count(OVERLAYS.filter((o) => view[o.key]).length);
 
-        // Update UI
-        document.getElementById(`${key}-display`).textContent = s[key];
-        document.getElementById(`${key}-input`).value = s[key];
+        for (const id of ['A', 'B']) {
+            const st = states[id];
+            if (!st) continue;
+            const d = describe(st);
+            const short = d.extras.length ? `${d.base}, ${d.extras[0]}${d.extras.length > 1 ? ` +${d.extras.length - 1}` : ''}` : d.base;
+            $(`tab-${id.toLowerCase()}`).textContent = `${id}: ${short}`;
+            $(`viz-label-${id.toLowerCase()}`).textContent = `${id}: ${[d.base, ...d.extras].join(', ')}`;
+            $(`infant-caption-${id.toLowerCase()}`).hidden = st.age >= 1;
+        }
+    }
 
-        runSimulation(activeProfile);
-    };
+    function simulate(id) {
+        if (!states[id]) return;
+        try {
+            sims[id] = generator.generate(states[id]);
+        } catch (e) {
+            console.error('Simulation error', e);
+        }
+    }
 
-    // Bind Controls
-    const bind = (id, key, type = 'value') => {
-        const el = document.getElementById(id);
-        if (!el) return;
-        el.addEventListener(type === 'checkbox' ? 'change' : 'input', (e) => {
-            const val = type === 'checkbox' ? e.target.checked : (type === 'value' ? e.target.value : parseInt(e.target.value));
-            states[activeProfile][key] = val;
+    function onStateChange() {
+        simulate(activeProfile);
+        updateChrome();
+        redraw();
+    }
 
-            // Specific UI logic
-            if (key === 'caffeineTime') {
-                document.getElementById('caffeine-time-val').textContent = val;
-            }
-            if (key === 'age' || key === 'gender') { // Gender handled separately but age needs check
-                const s = states[activeProfile];
-                document.getElementById('age-value').textContent = s.age;
-                const menGrp = document.getElementById('menopause-group');
-                if (s.age >= 40 && s.age <= 60 && s.gender === 'female') menGrp.style.display = 'block';
-                else { menGrp.style.display = 'none'; s.isMenopausal = false; }
-            }
+    function switchProfile(id) {
+        activeProfile = id;
+        document.querySelectorAll('.profile-tabs .tab').forEach((t) => {
+            const on = t.dataset.profile === id;
+            t.classList.toggle('active', on);
+            t.setAttribute('aria-pressed', on);
+        });
+        $('controls-mask').className = `profile-${id.toLowerCase()}-active`;
+        updateInputsFromState(states[id]);
+        updateChrome();
+    }
 
-            // Visual-only check
-            const isVisual = ['showProcessS', 'showProcessC', 'showGH', 'showCortisol'].includes(key);
-            if (isVisual) {
-                drawVisuals(activeProfile);
-            } else {
-                runSimulation(activeProfile);
-            }
+    // ---------------------------------------------------------------- bindings
+    const bindValue = (id, key, parse = (v) => v, type = 'input') => {
+        $(id).addEventListener(type, (e) => {
+            states[activeProfile][key] = parse(e.target.value);
+            onStateChange();
         });
     };
-
-    // Bind Gender/Metabolism (Radios)
-    const bindRadios = (name, key) => {
-        document.querySelectorAll(`input[name="${name}"]`).forEach(radio => {
-            radio.addEventListener('change', (e) => {
-                states[activeProfile][key] = e.target.value;
-                if (key === 'gender') {
-                    const s = states[activeProfile];
-                    const menGrp = document.getElementById('menopause-group');
-                    if (s.age >= 40 && s.age <= 60 && s.gender === 'female') menGrp.style.display = 'block';
-                    else { menGrp.style.display = 'none'; s.isMenopausal = false; }
-                }
-                runSimulation(activeProfile);
+    const bindCheck = (id, key) => {
+        $(id).addEventListener('change', (e) => {
+            states[activeProfile][key] = e.target.checked;
+            onStateChange();
+        });
+    };
+    const bindRadios = (name, key, parse = (v) => v) => {
+        document.querySelectorAll(`input[name="${name}"]`).forEach((r) => {
+            r.addEventListener('change', (e) => {
+                const s = states[activeProfile];
+                s[key] = parse(e.target.value);
+                if (key === 'gender') syncMenopause(s, true);
+                onStateChange();
             });
         });
     };
 
-    bind('age-slider', 'age', 'int');
-    bind('jetlag-select', 'jetLag');
-    bind('social-jetlag-toggle', 'socialJetLag', 'checkbox');
-    bind('sdb-slider', 'sdbSeverity', 'int');
-    bind('menopause-toggle', 'isMenopausal', 'checkbox');
-    bind('chronotype-select', 'chronotype');
-    bind('nocturia-slider', 'nocturia', 'int'); // Wait, ID was nocturia-slider? 
-    // Checking index.html... no, nocturia is counter buttons. BUT I saw bind('nocturia-slider'...) in old code.
-    // Index.html has buttons. bind() here is for range/select/check. 
-    // Counters uses updateCounter.
-
-    bind('process-s-toggle', 'showProcessS', 'checkbox');
-    bind('process-c-toggle', 'showProcessC', 'checkbox');
-    bind('gh-toggle', 'showGH', 'checkbox');
-    bind('cortisol-toggle', 'showCortisol', 'checkbox');
-    bind('caffeine-time-slider', 'caffeineTime', 'int');
-    bind('blue-light-toggle', 'blueLight', 'checkbox');
-
+    $('age-slider').addEventListener('input', (e) => {
+        const s = states[activeProfile];
+        s.age = parseInt(e.target.value, 10);
+        $('age-value').textContent = s.age;
+        syncMenopause(s, true);
+        onStateChange();
+    });
     bindRadios('gender', 'gender');
     bindRadios('metabolism', 'caffeineMetabolism');
+    bindRadios('sdb', 'sdbSeverity', (v) => parseInt(v, 10));
+    bindValue('chronotype-select', 'chronotype', undefined, 'change');
+    bindValue('jetlag-select', 'jetLag', undefined, 'change');
+    bindValue('caffeine-time-slider', 'caffeineTime', (v) => parseInt(v, 10));
+    $('caffeine-time-slider').addEventListener('input', (e) => { $('caffeine-time-val').textContent = e.target.value; });
+    bindCheck('social-jetlag-toggle', 'socialJetLag');
+    bindCheck('blue-light-toggle', 'blueLight');
+    bindCheck('menopause-toggle', 'isMenopausal');
 
+    document.querySelectorAll('.counter-input').forEach((c) => {
+        const key = c.dataset.key;
+        c.querySelectorAll('button').forEach((btn) => {
+            btn.addEventListener('click', () => {
+                const s = states[activeProfile];
+                s[key] = Math.max(0, Math.min(COUNTER_MAX[key], s[key] + parseInt(btn.dataset.step, 10)));
+                $(`${key}-display`).textContent = s[key];
+                onStateChange();
+            });
+        });
+    });
 
-    // --- Graphics ---
+    [['process-s-toggle', 'showProcessS'], ['process-c-toggle', 'showProcessC'], ['gh-toggle', 'showGH'], ['cortisol-toggle', 'showCortisol']]
+        .forEach(([id, key]) => {
+            $(id).addEventListener('change', (e) => {
+                view[key] = e.target.checked;
+                updateChrome();
+                redraw();
+            });
+        });
 
-    function resizeAll() {
-        resizeCanvas('A');
-        resizeCanvas('B');
+    $('compare-mode-toggle').addEventListener('change', (e) => {
+        compareMode = e.target.checked;
+        document.body.classList.toggle('compare-active', compareMode);
+        if (compareMode && !states.B) { // first time: B starts as a copy of A
+            states.B = clone(states.A);
+            simulate('B');
+        }
+        $('profile-tabs').hidden = !compareMode;
+        $('viz-b').hidden = !compareMode;
+        if (!compareMode) switchProfile('A');
+        updateChrome();
+        requestAnimationFrame(redraw);
+    });
+
+    document.querySelectorAll('.profile-tabs .tab').forEach((tab) => {
+        tab.addEventListener('click', () => switchProfile(tab.dataset.profile));
+    });
+
+    // ---------------------------------------------------------------- drawing
+    function setupCanvas(canvas, w, h) {
+        const dpr = window.devicePixelRatio || 1;
+        const pw = Math.round(w * dpr), ph = Math.round(h * dpr);
+        if (canvas.width !== pw) canvas.width = pw;
+        if (canvas.height !== ph) canvas.height = ph;
+        canvas.style.width = `${w}px`;
+        canvas.style.height = `${h}px`;
+        const ctx = canvas.getContext('2d');
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        return ctx;
     }
 
-    function resizeCanvas(profileId) {
-        const c = profileId === 'A' ? canvasA : canvasB;
-        if (!c || c.style.display === 'none') return;
-
-        // We need to fit container
-        const container = c.parentElement;
-        c.width = container.clientWidth;
-        c.height = container.clientHeight;
-
-        drawVisuals(profileId);
-    }
-
-    window.addEventListener('resize', resizeAll);
-
-    // Re-implemented drawing functions to use passed CTX
-    function drawBackground(ctx, params, timeToX, padding, height, viewStart, viewEnd) {
-        let start, end;
-        if (params.chronotype === 'lark') { start = 120; end = 600; }
-        else if (params.chronotype === 'owl') { start = 420; end = 900; }
-        else { start = 240; end = 720; }
-
-        const x1 = Math.max(padding.left, timeToX(start));
-        const x2 = Math.min(ctx.canvas.width - padding.right, timeToX(end));
-
-        if (x2 > x1) {
-            ctx.fillStyle = 'rgba(74, 222, 128, 0.05)';
-            ctx.fillRect(x1, padding.top, x2 - x1, height);
-
-            // Only draw label if visible
-            if (x1 < ctx.canvas.width - padding.right && x2 > padding.left) {
-                ctx.fillStyle = 'rgba(74, 222, 128, 0.5)';
-                ctx.font = '10px Inter';
-                ctx.textAlign = 'center';
-                const labelX = (x1 + x2) / 2;
-                if (labelX > padding.left && labelX < ctx.canvas.width - padding.right) {
-                    ctx.fillText("Ideal Sleep Window", labelX, padding.top - 10);
-                }
-            }
-
-            ctx.strokeStyle = 'rgba(74, 222, 128, 0.3)';
-            ctx.lineWidth = 2;
-            ctx.beginPath();
-            ctx.moveTo(x1, padding.top);
-            ctx.lineTo(x2, padding.top);
-            ctx.stroke();
+    // Shared clock window for every visible panel (F6.9).
+    function computeView() {
+        const ids = compareMode ? ['A', 'B'] : ['A'];
+        let start = Infinity, end = -Infinity;
+        for (const id of ids) {
+            const r = sims[id];
+            if (!r) continue;
+            const p = r.params;
+            start = Math.min(start, r.blocks[0].start, p.windowLength ? p.habitualBedtime : Infinity);
+            end = Math.max(end, p.sleepEnd, p.windowLength ? p.habitualBedtime + p.windowLength : -Infinity);
         }
-    }
-
-    function drawCurves(ctx, params, state_local, timeToX, padding, height, width, viewStart, viewEnd) {
-        // TIB Marker
-        const sleepStart = 240 + params.startTimeOffset;
-        const sleepEnd = sleepStart + params.tib;
-
-        if (sleepEnd >= viewStart && sleepEnd <= viewEnd) {
-            const xEnd = timeToX(sleepEnd);
-            ctx.strokeStyle = '#fff';
-            ctx.lineWidth = 2;
-            ctx.setLineDash([5, 5]);
-            ctx.beginPath();
-            ctx.moveTo(xEnd, padding.top);
-            ctx.lineTo(xEnd, height + padding.top);
-            ctx.stroke();
-            ctx.setLineDash([]);
-
-            ctx.fillStyle = '#fff';
-            ctx.font = 'bold 11px Inter';
-            ctx.textAlign = 'center';
-            // Clamp text to canvas logic? Nah, usually TIB is end of graph now.
-            ctx.fillText("End of Sleep", xEnd, padding.top - 20);
-            ctx.font = '10px Inter';
-            ctx.fillText(`(${(params.tib / 60).toFixed(1)}h)`, xEnd, padding.top - 8);
-        }
-
-        // Models
-        const models = TwoProcessModel.getCurves(params.tib, params.chronotype, state_local.caffeine, state_local.caffeineTime, state_local.caffeineMetabolism, state_local.blueLight);
-
-        // Process S
-        if (state_local.showProcessS) {
-            const hoursAwakeBeforeStart = 11;
-            const S_start = 1 - Math.exp(-(hoursAwakeBeforeStart * 60) / models.tau_r);
-
-            ctx.beginPath();
-            ctx.strokeStyle = '#facc15';
-            ctx.lineWidth = 4;
-            ctx.shadowColor = 'rgba(0, 0, 0, 0.5)';
-            ctx.shadowBlur = 4;
-
-            let first = true;
-            for (let t = Math.floor(viewStart); t <= Math.ceil(viewEnd); t += 5) {
-                const x = timeToX(t);
-                let S = 0;
-                if (t < sleepStart) S = 1 - (1 - S_start) * Math.exp(-t / models.tau_r);
-                else if (t < sleepEnd) {
-                    const S_onset = 1 - (1 - S_start) * Math.exp(-sleepStart / models.tau_r);
-                    S = S_onset * Math.exp(-(t - sleepStart) / models.tau_d);
-                } else {
-                    const S_end = (1 - (1 - S_start) * Math.exp(-sleepStart / models.tau_r)) * Math.exp(-(sleepEnd - sleepStart) / models.tau_d);
-                    S = 1 - (1 - S_end) * Math.exp(-(t - sleepEnd) / models.tau_r);
-                }
-
-                // Caffeine Block
-                const intakeTime = sleepStart - (models.caffeineTime * 60);
-                let caffeineBlock = 0;
-                if (models.caffeine > 0 && t >= intakeTime) {
-                    const timeSinceIntake = (t - intakeTime) / 60;
-                    caffeineBlock = (models.caffeine * 0.1) * Math.pow(0.5, timeSinceIntake / models.halfLife);
-                }
-
-                let effectiveS = Math.max(0, S - caffeineBlock);
-                const y = (height + padding.top) - (effectiveS * height * 0.9);
-                if (first) { ctx.moveTo(x, y); first = false; } else ctx.lineTo(x, y);
-            }
-            ctx.stroke();
-            ctx.shadowBlur = 0;
-            ctx.fillStyle = '#facc15';
-            ctx.fillText("Sleep Drive (S)", width - 50, padding.top + 20);
-        }
-
-        // Process C
-        if (state_local.showProcessC) {
-            ctx.beginPath();
-            ctx.strokeStyle = '#a78bfa';
-            ctx.lineWidth = 4;
-            ctx.shadowColor = 'rgba(0, 0, 0, 0.5)';
-            ctx.shadowBlur = 4;
-
-            let first = true;
-            for (let t = Math.floor(viewStart); t <= Math.ceil(viewEnd); t += 5) {
-                const x = timeToX(t);
-                const period = 24 * 60;
-                const phase = (t - models.peakTime) / period * 2 * Math.PI;
-                const C = 0.5 + 0.4 * Math.cos(phase);
-                const y = (height + padding.top) - (C * height * 0.9);
-                if (first) { ctx.moveTo(x, y); first = false; } else ctx.lineTo(x, y);
-            }
-            ctx.stroke();
-            ctx.shadowBlur = 0;
-        }
-    }
-
-    function drawHormones(ctx, params, state_local, timeToX, padding, height, width, viewStart, viewEnd) {
-        const sleepStart = 240 + params.startTimeOffset;
-        const sleepEnd = sleepStart + params.tib;
-
-        if (state_local.showGH) {
-            ctx.beginPath();
-            ctx.strokeStyle = '#2dd4bf';
-            ctx.lineWidth = 3;
-            ctx.shadowColor = 'rgba(45, 212, 191, 0.5)';
-            ctx.shadowBlur = 8;
-            let first = true;
-            for (let t = Math.floor(viewStart); t <= Math.ceil(viewEnd); t += 5) {
-                const x = timeToX(t);
-                let gh = 0.1;
-                if (t >= sleepStart && t <= sleepEnd) {
-                    const timeAsleep = t - sleepStart;
-                    const peak = 70; const sigma = 25;
-                    const pulse = Math.exp(-Math.pow(timeAsleep - peak, 2) / (2 * Math.pow(sigma, 2)));
-                    gh += pulse * 0.8;
-                }
-                const y = (height + padding.top) - (gh * height * 0.9);
-                if (first) { ctx.moveTo(x, y); first = false; } else ctx.lineTo(x, y);
-            }
-            ctx.stroke();
-            ctx.shadowBlur = 0;
-        }
-
-        if (state_local.showCortisol) {
-            ctx.beginPath();
-            ctx.strokeStyle = '#f97316';
-            ctx.lineWidth = 3;
-            ctx.shadowColor = 'rgba(249, 115, 22, 0.5)';
-            ctx.shadowBlur = 8;
-
-            const wakeTime = sleepEnd;
-            let first = true;
-            for (let t = Math.floor(viewStart); t <= Math.ceil(viewEnd); t += 5) {
-                const x = timeToX(t);
-                let cort = 0.2;
-                if (t < wakeTime - 180) { cort = 0.2; }
-                else if (t <= wakeTime + 30) {
-                    const progress = (t - (wakeTime - 180)) / 210;
-                    cort = 0.2 + (0.7 * Math.pow(progress, 2));
-                } else {
-                    const timeSincePeak = t - (wakeTime + 30);
-                    cort = 0.9 * Math.exp(-timeSincePeak / 180);
-                }
-                const y = (height + padding.top) - (cort * height * 0.9);
-                if (first) { ctx.moveTo(x, y); first = false; } else ctx.lineTo(x, y);
-            }
-            ctx.stroke();
-            ctx.shadowBlur = 0;
-        }
-    }
-
-    function drawHypnogram(ctx, canvas, simResult, state_local) {
-        const { blocks, wakeEvents, params, stats } = simResult;
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-        const padding = { top: 50, right: 30, bottom: 40, left: 60 };
-        const width = canvas.width - padding.left - padding.right;
-        const height = canvas.height - padding.top - padding.bottom;
-
-        // Dynamic Viewport Calculation
-        // Center on Sleep Period
-        const sleepStart = 240 + params.startTimeOffset;
-        const sleepEnd = sleepStart + params.tib;
-
-        let viewStart = sleepStart - 60; // 1h buffer before
-        let viewEnd = sleepEnd + 60;     // 1h buffer after
-
-        // Ensure minimum duration (e.g. 10 hours) to prevent excessive zoom
+        let viewStart = start - 60, viewEnd = end + 60;
         const minDuration = 600;
-        const currentDuration = viewEnd - viewStart;
-        if (currentDuration < minDuration) {
-            const extra = minDuration - currentDuration;
+        if (viewEnd - viewStart < minDuration) {
+            const extra = minDuration - (viewEnd - viewStart);
             viewStart -= extra / 2;
             viewEnd += extra / 2;
         }
+        // Same left margin in both panels, so the clock axes line up even if only one is a newborn.
+        const anyInfant = ids.some((id) => sims[id] && sims[id].params.infant);
+        return { viewStart, viewEnd, labels: anyInfant ? ['Active (REM)', 'Quiet (NREM)'] : ['Wake'] };
+    }
 
-        const totalViewMins = viewEnd - viewStart;
-        const timeToX = (t) => padding.left + ((t - viewStart) / totalViewMins) * width;
+    function redraw() {
+        const v = computeView();
+        drawPanel('A', v);
+        if (compareMode) drawPanel('B', v);
+    }
 
-        const stageY = {
-            [0]: padding.top,
-            [1]: padding.top + height * 0.20,
-            [2]: padding.top + height * 0.40,
-            [3]: padding.top + height * 0.60,
-            [4]: padding.top + height * 0.80
-        };
-        const stageColors = {
-            [0]: '#ef4444',
-            [1]: '#f59e0b',
-            [2]: '#38bdf8',
-            [3]: '#3b82f6',
-            [4]: '#1d4ed8'
-        };
+    function drawPanel(id, v) {
+        const r = sims[id];
+        if (!r) return;
+        drawHypnogram(canvases[id], r, v, states[id]);
+        drawPie(id, r);
+    }
 
-        drawBackground(ctx, params, timeToX, padding, height, viewStart, viewEnd);
+    function drawHypnogram(canvas, sim, { viewStart, viewEnd, labels }, state) {
+        const box = canvas.parentElement;
+        const cssW = box.clientWidth, cssH = box.clientHeight;
+        if (!cssW || !cssH) return;
+        const ctx = setupCanvas(canvas, cssW, cssH);
+        ctx.clearRect(0, 0, cssW, cssH);
+        const { blocks, wakeEvents, params } = sim;
 
-        // Grid
-        ctx.fillStyle = 'rgba(255, 255, 255, 0.5)';
-        ctx.font = '11px Inter';
-        ctx.textAlign = 'center';
+        const rows = params.infant
+            ? [[STAGES.WAKE, 'Wake'], [STAGES.REM, 'Active (REM)'], [STAGES.N2, 'Quiet (NREM)']]
+            : [[STAGES.WAKE, 'Wake'], [STAGES.REM, 'REM'], [STAGES.N1, 'N1'], [STAGES.N2, 'N2'], [STAGES.N3, 'N3']];
+        ctx.font = `600 12px ${FONT}`;
+        const labelW = Math.max(...rows.map(([, name]) => ctx.measureText(name).width), ...labels.map((n) => ctx.measureText(n).width));
 
-        // Determine grid step based on zoom? 
-        // 60 mins is usually fine for 10-12h view.
+        // Narrow plots put the overlay legend in a strip under the hour labels so it hides nothing.
+        const activeOverlays = OVERLAYS.filter((o) => view[o.key]);
+        const legendBelow = cssW - labelW - 34 < 480 && activeOverlays.length > 0;
+        const legendRows = legendBelow ? Math.ceil(activeOverlays.length / 2) : 0;
+        const pad = { top: 52, right: 16, bottom: 34 + legendRows * 18, left: Math.ceil(labelW) + 18 };
+        const width = cssW - pad.left - pad.right;
+        const height = cssH - pad.top - pad.bottom;
+        const bottom = pad.top + height;
+        const right = pad.left + width;
+        if (width <= 20 || height <= 20) return;
+        Object.assign(canvas.dataset, { viewStart, viewEnd, padLeft: pad.left, plotWidth: width });
+        const span = viewEnd - viewStart;
+        const timeToX = (t) => pad.left + ((t - viewStart) / span) * width;
+        const valueToY = (val) => bottom - val * height * 0.9;
+        const stageY = {};
+        rows.forEach(([stage], i) => { stageY[stage] = pad.top + (height * i) / rows.length; });
 
-        // Align to nearest hour
-        const startHourMins = Math.floor(viewStart / 60) * 60;
-
-        for (let m = startHourMins; m <= viewEnd; m += 60) {
-            if (m < viewStart) continue; // Skip if before start
-
-            const x = timeToX(m);
-            // Label logic: 0 = 18:00
-            const hourAbsolute = (18 + Math.floor(m / 60)) % 24;
-            const label = `${hourAbsolute}:00`;
-
-            ctx.fillText(label, x, canvas.height - 20);
-            ctx.strokeStyle = 'rgba(255, 255, 255, 0.1)';
-            ctx.beginPath(); ctx.moveTo(x, padding.top); ctx.lineTo(x, canvas.height - padding.bottom); ctx.stroke();
+        // Recommended sleep window (F6.5)
+        let windowLabelBox = null;
+        if (params.windowLength) {
+            const x1 = Math.max(pad.left, timeToX(params.habitualBedtime));
+            const x2 = Math.min(right, timeToX(params.habitualBedtime + params.windowLength));
+            if (x2 > x1) {
+                ctx.fillStyle = 'rgba(74, 222, 128, 0.06)';
+                ctx.fillRect(x1, pad.top, x2 - x1, height);
+                ctx.strokeStyle = 'rgba(74, 222, 128, 0.4)';
+                ctx.lineWidth = 2;
+                ctx.beginPath(); ctx.moveTo(x1, pad.top); ctx.lineTo(x2, pad.top); ctx.stroke();
+                ctx.font = `400 12px ${FONT}`;
+                const text = 'Recommended sleep window';
+                const tw = ctx.measureText(text).width;
+                ctx.fillStyle = 'rgba(134, 239, 172, 0.9)';
+                ctx.textAlign = 'left';
+                const lx = Math.min(x1 + 2, cssW - tw - 4);
+                ctx.fillText(text, lx, pad.top - 9);
+                windowLabelBox = [lx, lx + tw];
+            }
         }
 
-        // Labels (Y-Axis)
+        // Hour grid; label step widens on narrow screens so labels never collide.
+        const pxPerHour = (width / span) * 60;
+        const step = pxPerHour >= 48 ? 1 : pxPerHour >= 26 ? 2 : 3;
+        ctx.font = `400 12px ${FONT}`;
+        ctx.textAlign = 'center';
+        ctx.lineWidth = 1;
+        for (let m = Math.ceil(viewStart / 60) * 60; m <= viewEnd; m += 60) {
+            const x = timeToX(m);
+            ctx.strokeStyle = 'rgba(255, 255, 255, 0.08)';
+            ctx.beginPath(); ctx.moveTo(x, pad.top); ctx.lineTo(x, bottom); ctx.stroke();
+            const hour = (((18 + m / 60) % 24) + 24) % 24;
+            if (hour % step === 0) {
+                ctx.fillStyle = 'rgba(226, 232, 240, 0.7)';
+                ctx.fillText(fmtClock(m), x, bottom + 20);
+            }
+        }
+
+        // Stage rows
         ctx.textAlign = 'right';
-        Object.keys(stageY).forEach(stage => {
+        rows.forEach(([stage, name]) => {
             const y = stageY[stage];
-            ctx.fillStyle = stageColors[stage];
-            ctx.font = 'bold 11px Inter';
-            ctx.fillText(["Wake", "REM", "N1", "N2", "N3"][stage], padding.left - 10, y + 4);
+            ctx.fillStyle = STAGE_COLORS[stage];
+            ctx.font = `600 12px ${FONT}`;
+            ctx.fillText(name, pad.left - 10, y + 4);
             ctx.strokeStyle = 'rgba(255, 255, 255, 0.1)';
-            ctx.beginPath(); ctx.moveTo(padding.left, y); ctx.lineTo(canvas.width - padding.right, y); ctx.stroke();
+            ctx.beginPath(); ctx.moveTo(pad.left, y); ctx.lineTo(right, y); ctx.stroke();
         });
 
         // Blocks
-        blocks.forEach(block => {
-            // Clip? Or just let canvas handle it (since timeToX can go out of bounds)
-            // Canvas handles out of bounds drawing fine usually, but gradients might be weird.
-            // Let's check overlaps.
-            const bStart = block.start;
-            const bEnd = block.start + block.duration;
-
-            if (bEnd < viewStart || bStart > viewEnd) return; // Out of view
-
-            const x = timeToX(Math.max(viewStart, bStart));
-            const xEndBox = timeToX(Math.min(viewEnd, bEnd));
-            const w = xEndBox - x;
-
-            if (w < 0.5) return;
-
-            const y = stageY[block.stage];
-            const h = (canvas.height - padding.bottom) - y;
-
-            const grad = ctx.createLinearGradient(x, y, x, canvas.height - padding.bottom);
-            grad.addColorStop(0, stageColors[block.stage]);
-            grad.addColorStop(1, 'transparent');
-            ctx.fillStyle = grad;
+        ctx.save();
+        ctx.beginPath(); ctx.rect(pad.left, pad.top - 2, width, height + 2); ctx.clip();
+        blocks.forEach((b) => {
+            const bEnd = b.start + b.duration;
+            if (bEnd < viewStart || b.start > viewEnd) return;
+            const x = timeToX(b.start);
+            const w = timeToX(bEnd) - x;
+            if (w <= 0) return;
+            const y = stageY[b.stage];
+            const grad = ctx.createLinearGradient(0, y, 0, bottom);
+            grad.addColorStop(0, STAGE_COLORS[b.stage]);
+            grad.addColorStop(1, 'rgba(30, 41, 59, 0)');
             ctx.globalAlpha = 0.6;
-            ctx.fillRect(x, y, w, h);
-            ctx.globalAlpha = 1.0;
-            ctx.fillStyle = stageColors[block.stage];
-            ctx.fillRect(x, y - 1, w, 4);
+            ctx.fillStyle = grad;
+            ctx.fillRect(x, y, w, bottom - y);
+            ctx.globalAlpha = 1;
+            ctx.fillStyle = STAGE_COLORS[b.stage];
+            ctx.fillRect(x, y - 1, Math.max(w, 0.75), 4);
         });
 
-        // Wake Events
-        ctx.lineWidth = 1; ctx.globalAlpha = 0.7;
-        wakeEvents.forEach(wake => {
-            if (wake.time < viewStart || wake.time > viewEnd) return;
-            const x = timeToX(wake.time);
-            ctx.beginPath(); ctx.moveTo(x, padding.top); ctx.lineTo(x, height + padding.top);
-            ctx.strokeStyle = '#ef4444'; ctx.stroke();
+        // Arousal ticks (F6.7): short ticks from the top line, never full height.
+        ctx.globalAlpha = 0.6;
+        ctx.strokeStyle = '#ef4444';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        wakeEvents.forEach((ev) => {
+            if (ev.time < viewStart || ev.time > viewEnd) return;
+            const x = Math.round(timeToX(ev.time)) + 0.5;
+            ctx.moveTo(x, pad.top); ctx.lineTo(x, pad.top + 6);
         });
-        ctx.globalAlpha = 1.0;
+        ctx.stroke();
+        ctx.globalAlpha = 1;
 
-        drawCurves(ctx, params, state_local, timeToX, padding, height, width, viewStart, viewEnd);
-        drawHormones(ctx, params, state_local, timeToX, padding, height, width, viewStart, viewEnd);
+        drawOverlays(ctx, sim, state, { viewStart, viewEnd, timeToX, valueToY });
+        ctx.restore();
+
+        // Wake-up marker (F6.4) at the end of the last sleep block.
+        const xEnd = timeToX(params.sleepEnd);
+        if (xEnd >= pad.left && xEnd <= right) {
+            ctx.strokeStyle = '#fff';
+            ctx.lineWidth = 1.5;
+            ctx.setLineDash([5, 5]);
+            ctx.beginPath(); ctx.moveTo(xEnd, pad.top); ctx.lineTo(xEnd, bottom); ctx.stroke();
+            ctx.setLineDash([]);
+            ctx.font = `600 12px ${FONT}`;
+            const text = `Wake-up ${fmtClock(params.sleepEnd)}`;
+            const tw = ctx.measureText(text).width;
+            const lx = clamp(xEnd - tw / 2, 4, cssW - tw - 4);
+            const collides = windowLabelBox && lx < windowLabelBox[1] + 8 && lx + tw > windowLabelBox[0] - 8;
+            ctx.fillStyle = '#fff';
+            ctx.textAlign = 'left';
+            ctx.fillText(text, lx, collides ? pad.top - 27 : pad.top - 9);
+        }
+
+        if (legendBelow) drawOverlayStrip(ctx, activeOverlays, pad.left, bottom + 38, width);
+        else drawOverlayLegend(ctx, right, pad.top);
     }
 
-    function drawPieChart(profileId, stats) {
-        const c = profileId === 'A' ? pieCanvasA : pieCanvasB;
-        if (!c) return;
-        const ctx = c.getContext('2d');
-        const width = c.width; const height = c.height;
+    function drawOverlayStrip(ctx, on, left, top, width) {
+        ctx.font = `400 12px ${FONT}`;
+        ctx.textAlign = 'left';
+        const colW = width / 2;
+        on.forEach((o, i) => {
+            const x = left + (i % 2) * colW;
+            const cy = top + Math.floor(i / 2) * 18;
+            ctx.strokeStyle = o.color;
+            ctx.lineWidth = 2.5;
+            ctx.beginPath(); ctx.moveTo(x, cy); ctx.lineTo(x + 16, cy); ctx.stroke();
+            ctx.fillStyle = '#e2e8f0';
+            ctx.fillText(o.name, x + 22, cy + 4);
+        });
+    }
 
-        const radius = Math.min(width, height) / 2;
-        const centerX = width / 2; const centerY = height / 2;
+    function curve(ctx, color, { viewStart, viewEnd, timeToX, valueToY }, fn) {
+        ctx.beginPath();
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 2.5;
+        ctx.lineJoin = 'round';
+        for (let t = viewStart, first = true; t <= viewEnd + 1e-9; t += 2, first = false) {
+            const x = timeToX(t), y = valueToY(fn(t));
+            if (first) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+        }
+        ctx.stroke();
+    }
 
-        ctx.clearRect(0, 0, width, height);
+    function drawOverlays(ctx, sim, state, v) {
+        const { params, blocks } = sim;
+        const sleepStart = params.bedtime;
+        const sleepEnd = params.sleepEnd;
+
+        if (view.showProcessS) {
+            const m = TwoProcessModel.getCurves(state.caffeine, state.caffeineTime, state.caffeineMetabolism);
+            curve(ctx, '#facc15', v, (t) => TwoProcessModel.sleepPressure(t, sleepStart, sleepEnd, m));
+        }
+        if (view.showProcessC) {
+            // Newborns have no recommended window; 11 h keeps the curve defined (see report).
+            const len = params.windowLength || 11 * 60;
+            const on = params.habitualBedtime - 120 + params.clockShift;
+            const off = params.habitualBedtime + len + 30 + params.clockShift;
+            curve(ctx, '#a78bfa', v, (t) => 0.1 + 0.8 * TwoProcessModel.melatonin(t, on, off));
+        }
+        if (view.showGH) {
+            const firstN3 = blocks.find((b) => b.stage === STAGES.N3);
+            let amp = 0, centre = 0;
+            if (firstN3) {
+                const w0 = params.sleepOnset, w1 = params.sleepOnset + 180;
+                const early = blocks.reduce((s, b) => (b.stage === STAGES.N3
+                    ? s + Math.max(0, Math.min(b.start + b.duration, w1) - Math.max(b.start, w0)) : s), 0);
+                amp = 0.8 * Math.min(1, early / 60);
+                centre = firstN3.start + firstN3.duration / 2;
+            }
+            curve(ctx, '#2dd4bf', v, (t) => 0.1 + (amp ? amp * Math.exp(-((t - centre) ** 2) / (2 * 25 * 25)) : 0));
+        }
+        if (view.showCortisol) {
+            const wake = sleepEnd;
+            curve(ctx, '#f97316', v, (t) => {
+                if (t < wake - 180) return 0.2;
+                if (t <= wake + 30) return 0.2 + 0.7 * Math.pow((t - (wake - 180)) / 210, 2);
+                return 0.9 * Math.exp(-(t - (wake + 30)) / 180);
+            });
+        }
+    }
+
+    function drawOverlayLegend(ctx, right, top) {
+        const on = OVERLAYS.filter((o) => view[o.key]);
+        if (!on.length) return;
+        ctx.font = `400 12px ${FONT}`;
+        const textW = Math.max(...on.map((o) => ctx.measureText(o.name).width));
+        const rowH = 18, sample = 16, padX = 8, padY = 6;
+        const w = padX * 2 + sample + 6 + textW;
+        const h = padY * 2 + rowH * on.length - 4;
+        const x = right - w - 6, y = top + 8;
+        ctx.fillStyle = 'rgba(15, 23, 42, 0.88)';
+        ctx.strokeStyle = 'rgba(148, 163, 184, 0.3)';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        if (ctx.roundRect) ctx.roundRect(x, y, w, h, 6); else ctx.rect(x, y, w, h);
+        ctx.fill(); ctx.stroke();
+        ctx.textAlign = 'left';
+        on.forEach((o, i) => {
+            const cy = y + padY + i * rowH + 7;
+            ctx.strokeStyle = o.color;
+            ctx.lineWidth = 2.5;
+            ctx.beginPath(); ctx.moveTo(x + padX, cy); ctx.lineTo(x + padX + sample, cy); ctx.stroke();
+            ctx.fillStyle = '#e2e8f0';
+            ctx.fillText(o.name, x + padX + sample + 6, cy + 4);
+        });
+    }
+
+    function drawPie(id, sim) {
+        const { stats, params } = sim;
+        const c = pies[id];
+        const size = c.clientWidth || 140;
+        const ctx = setupCanvas(c, size, size);
+        ctx.clearRect(0, 0, size, size);
+        const infant = params.infant;
         const data = [
-            { label: 'N3', value: stats.n3P, color: '#1d4ed8' },
-            { label: 'REM', value: stats.remP, color: '#f59e0b' },
-            { label: 'N2', value: stats.n2P, color: '#3b82f6' },
-            { label: 'N1', value: stats.n1P, color: '#38bdf8' },
-            { label: 'Wake', value: stats.wasoMins / stats.tst, color: '#ef4444' }
-        ];
+            { label: 'N3', value: stats.n3P, color: STAGE_COLORS[STAGES.N3] },
+            { label: infant ? 'Quiet (NREM)' : 'N2', value: stats.n2P, color: STAGE_COLORS[STAGES.N2] },
+            { label: 'N1', value: stats.n1P, color: STAGE_COLORS[STAGES.N1] },
+            { label: infant ? 'Active (REM)' : 'REM', value: stats.remP, color: STAGE_COLORS[STAGES.REM] },
+        ].filter((d) => !infant || d.value > 0);
 
-        const total = data.reduce((sum, item) => sum + item.value, 0);
-        let startAngle = -Math.PI / 2;
-        data.forEach(slice => {
-            const sliceAngle = (slice.value / total) * 2 * Math.PI;
-            ctx.beginPath(); ctx.moveTo(centerX, centerY);
-            ctx.arc(centerX, centerY, radius, startAngle, startAngle + sliceAngle);
+        const r = size / 2, cx = size / 2, cy = size / 2;
+        let a = -Math.PI / 2;
+        data.forEach((d) => {
+            const sweep = d.value * 2 * Math.PI;
+            ctx.beginPath(); ctx.moveTo(cx, cy);
+            ctx.arc(cx, cy, r, a, a + sweep);
             ctx.closePath();
-            ctx.fillStyle = slice.color; ctx.fill();
-            startAngle += sliceAngle;
+            ctx.fillStyle = d.color; ctx.fill();
+            a += sweep;
         });
 
-        // HTML Metrics
-        const suffix = profileId === 'A' ? '' : '-b';
-        const legendEl = document.getElementById('pie-legend' + suffix);
-        if (legendEl) {
-            legendEl.innerHTML = data.map(d => `
-                <div class="legend-item">
-                    <div class="legend-color" style="background: ${d.color}"></div>
-                    <span>${d.label}: ${Math.round((d.value / total) * 100)}%</span>
-                </div>
-            `).join('');
-        }
-        const metricsEl = document.getElementById('metrics-display' + suffix);
-        if (metricsEl) {
-            const se = stats.sleepEfficiency;
-            const seColor = se < 75 ? '#ef4444' : (se < 85 ? '#facc15' : '#4ade80');
-            metricsEl.innerHTML = `
-                <div class="metric-card"><div class="metric-value">${(stats.tib / 60).toFixed(1)}h</div><div class="metric-label">Time in Bed</div></div>
-                <div class="metric-card"><div class="metric-value">${(stats.tst / 60).toFixed(1)}h</div><div class="metric-label">Total Sleep</div></div>
-                <div class="metric-card"><div class="metric-value" style="color: ${seColor}">${Math.round(se)}%</div><div class="metric-label">Efficiency</div></div>
-                <div class="metric-card"><div class="metric-value">${Math.round(stats.latency)}m</div><div class="metric-label">Latency</div></div>
-                <div class="metric-card"><div class="metric-value">${Math.round(stats.wasoMins)}m</div><div class="metric-label">WASO</div></div>
-            `;
-        }
+        $(`pie-legend${suffix[id]}`).innerHTML = data.map((d) => `
+            <div class="legend-item">
+                <div class="legend-color" style="background: ${d.color}"></div>
+                <span>${d.label} ${Math.round(d.value * 100)}% - ${fmtDur(d.value * stats.tst)}</span>
+            </div>`).join('');
+
+        const se = stats.sleepEfficiency;
+        const seColor = se < 75 ? '#ef4444' : se < 85 ? '#facc15' : '#4ade80';
+        const cards = [
+            [fmtDur(stats.tib), 'Time in bed'],
+            [fmtDur(stats.tst), 'Total sleep'],
+            [`${Math.round(se)}%`, 'Efficiency', seColor],
+            [fmtDur(stats.latency), 'Time to fall asleep'],
+            [fmtDur(stats.wasoMins), 'Awake in the night'],
+        ];
+        if (params.age < 5) cards.push([fmtDur(stats.sleepPer24h), 'Sleep per 24 h']);
+        $(`metrics-display${suffix[id]}`).innerHTML = cards.map(([value, label, color]) => `
+            <div class="metric-card"><div class="metric-value"${color ? ` style="color: ${color}"` : ''}>${value}</div><div class="metric-label">${label}</div></div>`).join('');
     }
 
-    function runSimulation(profileId) {
-        if (!states[profileId]) return;
-        try {
-            cachedSimulations[profileId] = generator.generate(states[profileId]);
-            drawVisuals(profileId);
-        } catch (e) {
-            console.error('Sim Error', e);
-        }
+    // ---------------------------------------------------------------- start
+    let pending = false;
+    const scheduleRedraw = () => {
+        if (pending) return;
+        pending = true;
+        requestAnimationFrame(() => { pending = false; redraw(); });
+    };
+    if (window.ResizeObserver) {
+        const ro = new ResizeObserver(scheduleRedraw);
+        document.querySelectorAll('.canvas-container').forEach((el) => ro.observe(el));
     }
+    window.addEventListener('resize', scheduleRedraw);
 
-    function drawVisuals(profileId) {
-        const result = cachedSimulations[profileId];
-        if (!result) { runSimulation(profileId); return; }
-
-        const c = profileId === 'A' ? canvasA : canvasB;
-        if (!c) return;
-        drawHypnogram(c.getContext('2d'), c, result, states[profileId]);
-        drawPieChart(profileId, result.stats);
-    }
-
-    resizeAll();
-    runSimulation('A');
+    switchProfile('A');
+    simulate('A');
+    redraw();
+    if (document.fonts && document.fonts.ready) document.fonts.ready.then(redraw);
 });
